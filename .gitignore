@@ -1,0 +1,14 @@
+# venv
+.venv/
+# dati locali
+data/
+# config sensibili
+.env
+# python cache
+__pycache__/
+*.pyc
+# editor
+.vscode/
+.idea/
+# output vari
+*.xlsx

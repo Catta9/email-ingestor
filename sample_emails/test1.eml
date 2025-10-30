@@ -1,0 +1,18 @@
+Return-Path: <customer@example.com>
+From: Mario Rossi <customer@example.com>
+To: sales@mycompany.it
+Subject: Richiesta preventivo
+Message-ID: <test-message-1@example.com>
+Date: Tue, 28 Oct 2025 10:33:21 +0100
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Buongiorno,
+sono Mario Rossi dell'azienda: Rossi Impianti S.r.l.
+Telefono: +39 345 678 9012
+Email: mario.rossi@example.com
+
+Vorrei un preventivo per 3 licenze del vostro software.
+
+Grazie,
+Mario
