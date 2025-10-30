@@ -20,6 +20,7 @@ from libs.email_utils import (
 )
 from libs.ingestor import extract_sender_domain, process_incoming_email
 from libs.lead_classifier import LeadRelevanceScorer
+from libs.ml_classifier import LeadMLClassifier, ModelNotAvailableError
 from libs.lead_storage import ExcelLeadWriter
 from libs.notifier import EmailNotifier
 
@@ -59,20 +60,54 @@ def parse_received_at(headers: dict[str, str]) -> datetime | None:
         return None
 
 
-_LEAD_SCORER: LeadRelevanceScorer | None = None
+_RULE_BASED_SCORER: LeadRelevanceScorer | None = None
+_ML_CLASSIFIER: LeadMLClassifier | None = None
+_ML_AVAILABLE = True
 
 
-def _get_lead_scorer() -> LeadRelevanceScorer:
-    global _LEAD_SCORER
-    if _LEAD_SCORER is None:
-        _LEAD_SCORER = LeadRelevanceScorer.from_env()
-    return _LEAD_SCORER
+def _get_rule_based_scorer() -> LeadRelevanceScorer:
+    global _RULE_BASED_SCORER
+    if _RULE_BASED_SCORER is None:
+        _RULE_BASED_SCORER = LeadRelevanceScorer.from_env()
+    return _RULE_BASED_SCORER
+
+
+def _get_ml_classifier() -> LeadMLClassifier | None:
+    global _ML_CLASSIFIER, _ML_AVAILABLE
+    if not _ML_AVAILABLE:
+        return None
+    if _ML_CLASSIFIER is None:
+        try:
+            _ML_CLASSIFIER = LeadMLClassifier.from_env()
+        except ModelNotAvailableError as exc:
+            logger.warning("ML classifier unavailable: %s", exc)
+            _ML_AVAILABLE = False
+            return None
+    return _ML_CLASSIFIER
+
+
+def _use_ml_strategy() -> bool:
+    strategy = os.getenv("LEAD_CLASSIFIER_STRATEGY", "rule_based").strip().lower()
+    return strategy == "ml" or strategy == "hybrid"
+
+
+def _use_hybrid_strategy() -> bool:
+    strategy = os.getenv("LEAD_CLASSIFIER_STRATEGY", "rule_based").strip().lower()
+    return strategy == "hybrid"
 
 
 def matches_lead_keywords(headers: dict[str, str], body: str) -> bool:
-    scorer = _get_lead_scorer()
-    score = scorer.score(headers, body)
-    return score >= scorer.threshold
+    classifier = _get_ml_classifier() if _use_ml_strategy() else None
+    if classifier is not None:
+        if classifier.is_relevant(headers, body):
+            return True
+        if _use_hybrid_strategy():
+            scorer = _get_rule_based_scorer()
+            return scorer.is_relevant(headers, body)
+        return False
+
+    scorer = _get_rule_based_scorer()
+    return scorer.is_relevant(headers, body)
 
 
 def _already_processed(db, message_id: str | None, uid_str: str | None) -> bool:

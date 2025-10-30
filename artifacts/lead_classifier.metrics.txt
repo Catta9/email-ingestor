@@ -1,0 +1,5 @@
+Accuracy: 1.000
+Precision: 1.000
+Recall: 1.000
+F1-score: 1.000
+TP: 9  FP: 0  TN: 7  FN: 0
