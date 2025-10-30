@@ -34,6 +34,9 @@ def test_contacts_endpoint_returns_data(client, session_factory):
         assert item["org"] == "Example Inc"
         # created_at should be a valid ISO formatted datetime
         datetime.fromisoformat(item["created_at"])
+        assert "last_message_subject" in item
+        assert "last_message_received_at" in item
+        assert "last_message_excerpt" in item
     finally:
         session.close()
 
@@ -68,6 +71,9 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
             "org",
             "source",
             "created_at",
+            "last_message_subject",
+            "last_message_received_at",
+            "last_message_excerpt",
         ]
         data_row = [cell.value for cell in sheet[2]]
         assert data_row[1] == "john.smith@example.com"

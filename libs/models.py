@@ -24,6 +24,9 @@ class Contact(Base):
     source: Mapped[str] = mapped_column(String, default="email")
     consent: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_message_subject: Mapped[str | None] = mapped_column(String, nullable=True)
+    last_message_received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    last_message_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 ## audit/eventi -> traccia provenienza e payload estratto 
 class ContactEvent(Base):
