@@ -11,14 +11,25 @@ from libs.ingestor import process_incoming_email
 
 load_dotenv()
 
-def allowed_sender(headers: dict) -> bool:
+def allowed_sender(headers: dict) -> tuple[bool, str | None]:
+    raw_from = headers.get("From") or ""
+    _, email_address = parseaddr(raw_from)
+    email_address = email_address.strip()
+
+    if not email_address or "@" not in email_address:
+        return False, f"Invalid sender address: {raw_from!r}"
+
+    domain = email_address.rsplit("@", 1)[1].lower()
+
     allowed = os.getenv("ALLOWED_SENDER_DOMAINS", "").strip()
     if not allowed:
-        return True
-    domains = [d.strip().lower() for d in allowed.split(",") if d.strip()]
-    frm = headers.get("From") or ""
-    frm_low = frm.lower()
-    return any(("@"+d in frm_low) or (frm_low.endswith(d)) for d in domains)
+        return True, None
+
+    allowed_domains = {d.strip().lower() for d in allowed.split(",") if d.strip()}
+    if domain in allowed_domains:
+        return True, None
+
+    return False, f"Sender domain not allowed: {domain}"
 
 ## è lo script che userà prod dev
 def main():
@@ -40,6 +51,21 @@ def main():
             msg_id = (headers.get("Message-ID") or "").strip()
 
             with SessionLocal() as db:
+                # Idempotency check on Message-ID (preferred) or IMAP UID
+                already = False
+                if msg_id:
+                    already = db.execute(select(ProcessedMessage).where(ProcessedMessage.message_id == msg_id)).scalar_one_or_none() is not None
+                if not already:
+                    # fallback to UID check
+                    already = db.execute(select(ProcessedMessage).where(ProcessedMessage.imap_uid == str(uid))).scalar_one_or_none() is not None
+
+                if already:
+                    continue
+
+                is_allowed, reason = allowed_sender(headers)
+                if not is_allowed:
+                    skip_reason = reason or f"Sender not allowed: {headers.get('From')}"
+                    print(f"[skip] {skip_reason}")
                 if not allowed_sender(headers):
                     print(f"[skip] Sender not allowed: {headers.get('From')}")
                     # still mark as processed to avoid re-check
