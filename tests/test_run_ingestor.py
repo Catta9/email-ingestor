@@ -1,8 +1,10 @@
+import json
 import logging
 
 from sqlalchemy import select
 
 from scripts import run_ingestor
+from scripts import train_classifier
 
 
 def test_allowed_sender_accepts_configured_domain(monkeypatch):
@@ -58,20 +60,50 @@ def test_runner_logs_domain_skip(session_factory, caplog):
     assert stored, "ProcessedMessage should be recorded"
 
 
+def _reset_classifiers():
+    run_ingestor._RULE_BASED_SCORER = None
+    run_ingestor._ML_CLASSIFIER = None
+    run_ingestor._ML_AVAILABLE = True
+
+
+def _write_dataset(path, records):
+    lines = [json.dumps(record, ensure_ascii=False) for record in records]
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _train_ml_model(monkeypatch, tmp_path, records):
+    dataset_path = tmp_path / "dataset.jsonl"
+    _write_dataset(dataset_path, records)
+
+    output_dir = tmp_path / "model"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("LEAD_MODEL_PATH", str(output_dir / "copy.json"))
+
+    config = train_classifier.TrainingConfig(
+        dataset_path=dataset_path,
+        output_path=output_dir / "lead_classifier.json",
+        test_size=0.25,
+        random_state=42,
+    )
+    train_classifier.train(config)
+    return config.output_path
+
+
 def test_lead_scorer_detects_linguistic_variants(monkeypatch):
     monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
     monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
     monkeypatch.delenv("LEAD_NEGATIVE_KEYWORDS", raising=False)
-    run_ingestor._LEAD_SCORER = None
+    monkeypatch.setenv("LEAD_CLASSIFIER_STRATEGY", "rule_based")
+    _reset_classifiers()
 
     headers = {"Subject": "Richiesta preventivi"}
     assert run_ingestor.matches_lead_keywords(headers, "") is True
 
-    run_ingestor._LEAD_SCORER = None
+    _reset_classifiers()
     headers = {"Subject": "Quote request for services"}
     assert run_ingestor.matches_lead_keywords(headers, "") is True
 
-    run_ingestor._LEAD_SCORER = None
+    _reset_classifiers()
     headers = {"Subject": "Richiesta informazioni"}
     body = "Serve una quotazione urgente"
     assert run_ingestor.matches_lead_keywords(headers, body) is False
@@ -81,7 +113,8 @@ def test_lead_scorer_handles_negative_keywords(monkeypatch):
     monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
     monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
     monkeypatch.setenv("LEAD_NEGATIVE_KEYWORDS", "non serve preventivo")
-    run_ingestor._LEAD_SCORER = None
+    monkeypatch.setenv("LEAD_CLASSIFIER_STRATEGY", "rule_based")
+    _reset_classifiers()
 
     headers = {"Subject": "Richiesta preventivo"}
     body = "In realta non serve preventivo al momento"
@@ -92,12 +125,57 @@ def test_lead_scorer_combines_subject_and_body(monkeypatch):
     monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
     monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
     monkeypatch.delenv("LEAD_NEGATIVE_KEYWORDS", raising=False)
-    run_ingestor._LEAD_SCORER = None
+    monkeypatch.setenv("LEAD_CLASSIFIER_STRATEGY", "rule_based")
+    _reset_classifiers()
 
     headers = {"Subject": "Richiesta informazioni"}
     body = "Vorremmo una quotazione e un'offerta dettagliata"
     assert run_ingestor.matches_lead_keywords(headers, body) is True
 
-    run_ingestor._LEAD_SCORER = None
+    _reset_classifiers()
     body = "Vorremmo solo una quotazione"
     assert run_ingestor.matches_lead_keywords(headers, body) is False
+
+
+def test_ml_classifier_strategy(monkeypatch, tmp_path):
+    records = [
+        {"label": 1, "subject": "Richiesta preventivo", "body": "Preventivo per sito web aziendale"},
+        {"label": 1, "subject": "Quote request", "body": "Richiesta quotazione software gestionale"},
+        {"label": 0, "subject": "Newsletter aziendale", "body": "Promo speciali del mese"},
+        {"label": 0, "subject": "Aggiornamento manutenzione", "body": "Il servizio sarà sospeso domenica"},
+        {"label": 1, "subject": "Preventivo", "body": "Vorremmo conoscere il prezzo"},
+        {"label": 0, "subject": "Report mensile", "body": "Trovi allegato il report"},
+    ]
+    model_path = _train_ml_model(monkeypatch, tmp_path, records)
+
+    monkeypatch.setenv("LEAD_CLASSIFIER_STRATEGY", "ml")
+    monkeypatch.setenv("LEAD_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("LEAD_MODEL_THRESHOLD", "0.7")
+    _reset_classifiers()
+
+    headers = {"Subject": "Richiesta preventivo"}
+    assert run_ingestor.matches_lead_keywords(headers, "Preventivo per sito web") is True
+
+    headers = {"Subject": "Newsletter aziendale"}
+    assert run_ingestor.matches_lead_keywords(headers, "Promo speciali del mese") is False
+
+
+def test_hybrid_strategy_falls_back(monkeypatch, tmp_path):
+    records = [
+        {"label": 1, "subject": "Richiesta preventivo", "body": "Preventivo impianto"},
+        {"label": 1, "subject": "Offerta commerciale", "body": "Vorremmo una quotazione"},
+        {"label": 0, "subject": "Newsletter settimanale", "body": "Resta aggiornato"},
+        {"label": 0, "subject": "Aggiornamento manutenzione", "body": "Servizio sospeso"},
+    ]
+    model_path = _train_ml_model(monkeypatch, tmp_path, records)
+
+    monkeypatch.setenv("LEAD_CLASSIFIER_STRATEGY", "hybrid")
+    monkeypatch.setenv("LEAD_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("LEAD_MODEL_THRESHOLD", "0.95")
+    monkeypatch.delenv("LEAD_NEGATIVE_KEYWORDS", raising=False)
+    monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
+    _reset_classifiers()
+
+    headers = {"Subject": "Richiesta informazioni"}
+    body = "Vorremmo una quotazione e un'offerta dettagliata"
+    assert run_ingestor.matches_lead_keywords(headers, body) is True
