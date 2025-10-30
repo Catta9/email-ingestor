@@ -1,10 +1,26 @@
 from __future__ import annotations
+import logging
+from email.utils import parseaddr
 from typing import Any, Dict
 
 from sqlalchemy import select
 
 from .models import Contact, ContactEvent, ProcessedMessage
 from .parser import parse_contact_fields
+
+
+logger = logging.getLogger(__name__)
+
+
+def extract_sender_domain(headers: dict[str, str]) -> str | None:
+    """Return the sender domain from the headers if present."""
+
+    raw_from = headers.get("From") or ""
+    _, email_address = parseaddr(raw_from)
+    email_address = email_address.strip().lower()
+    if "@" not in email_address:
+        return None
+    return email_address.rsplit("@", 1)[1]
 
 
 class IngestionResult(Dict[str, Any]):
@@ -22,12 +38,25 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
     message_id = (headers.get("Message-ID") or "").strip()
     uid_str = str(imap_uid) if imap_uid is not None else None
 
+    from_domain = extract_sender_domain(headers)
+    identifier = message_id or uid_str
+
+    context: dict[str, str | int | None] = {
+        "imap_uid": uid_str,
+        "message_id": identifier,
+        "from_domain": from_domain,
+    }
+
     # Idempotency: prefer Message-ID, fallback to IMAP UID.
     if message_id:
         processed = db.execute(
             select(ProcessedMessage).where(ProcessedMessage.message_id == message_id)
         ).scalar_one_or_none()
         if processed is not None:
+            logger.info(
+                "Email already processed (message-id)",
+                extra={**context, "esito": "duplicate"},
+            )
             return IngestionResult({"status": "skipped", "reason": "already_processed"})
 
     if uid_str:
@@ -35,16 +64,26 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
             select(ProcessedMessage).where(ProcessedMessage.imap_uid == uid_str)
         ).scalar_one_or_none()
         if processed is not None:
+            logger.info(
+                "Email already processed (imap-uid)",
+                extra={**context, "esito": "duplicate"},
+            )
             return IngestionResult({"status": "skipped", "reason": "already_processed"})
 
     fields = parse_contact_fields(body, headers=headers)
     email_val = fields.get("email")
     fallback_message_id = message_id or (f"uid:{uid_str}" if uid_str else None)
+    if fallback_message_id and context["message_id"] is None:
+        context["message_id"] = fallback_message_id
 
     if not email_val:
         if fallback_message_id:
             db.add(ProcessedMessage(message_id=fallback_message_id, imap_uid=uid_str))
             db.commit()
+        logger.warning(
+            "Email skipped due to missing email field",
+            extra={**context, "esito": "skipped"},
+        )
         return IngestionResult({"status": "skipped", "reason": "missing_email"})
 
     existing = db.execute(select(Contact).where(Contact.email == email_val)).scalar_one_or_none()
@@ -89,4 +128,8 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
     )
 
     db.commit()
+    final_context = {**context, "contact_id": contact.id}
+    if final_context.get("message_id") is None:
+        final_context["message_id"] = str(contact.id)
+    logger.info("Email ingested successfully", extra={**final_context, "esito": "ingested"})
     return IngestionResult({"status": "processed", "contact_id": contact.id})
