@@ -47,3 +47,49 @@ def test_parser_company_english_and_email_in_body_only():
     assert r["first_name"] == "John"
     assert r["last_name"] == "Doe"
     assert "Tech" in (r["org"] or "")
+
+
+def test_parser_prefers_reply_to_and_structured_signature():
+    text = """
+    Cordiali saluti,
+    Mario Rossi
+    Ruolo: Sales Manager
+    Tel.: +39 02 1234 5678
+    Cell. +39 345 987 6543
+    Email: mario.rossi@example.com
+    Azienda: Rossi Impianti S.r.l.
+    """
+
+    headers = {
+        "From": "Customer Care <noreply@service.com>",
+        "Reply-To": "Mario Rossi <mario.rossi@example.com>",
+    }
+
+    r = parse_contact_fields(text, headers=headers)
+
+    assert r["email"] == "mario.rossi@example.com"
+    assert r["first_name"] == "Mario"
+    assert r["last_name"] == "Rossi"
+    # prefer the cell phone number because of the label
+    assert r["phone"].endswith("3459876543")
+    assert r["org"] == "Rossi Impianti S.r.l."
+
+
+def test_parser_skips_fax_and_recognises_other_sigle():
+    text = """
+    Kind regards,
+    Laura Bianchi
+    Phone: +33 1 44 55 66 77
+    Fax: +33 1 44 55 66 78
+    Company - Nouvelle Energie S.A.S.
+    """
+
+    headers = {
+        "From": "Laura Bianchi <laura.bianchi@example.fr>",
+    }
+
+    r = parse_contact_fields(text, headers=headers)
+
+    assert r["email"] == "laura.bianchi@example.fr"
+    assert r["phone"].endswith("144556677")
+    assert r["org"] == "Nouvelle Energie S.A.S."
