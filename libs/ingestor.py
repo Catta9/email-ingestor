@@ -1,6 +1,7 @@
 from __future__ import annotations
 import logging
 from email.utils import parseaddr
+from datetime import datetime
 from typing import Any, Dict
 
 from sqlalchemy import select
@@ -27,7 +28,23 @@ class IngestionResult(Dict[str, Any]):
     """Typed dict-like result for process_incoming_email."""
 
 
-def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_uid: int | str | None = None) -> IngestionResult:
+def _build_body_excerpt(body: str, max_chars: int = 400) -> str:
+    """Return a compact single-line excerpt of the body."""
+
+    normalized = " ".join(body.split())
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[: max_chars - 1] + "…"
+
+
+def process_incoming_email(
+    db,
+    headers: dict[str, str] | None,
+    body: str,
+    imap_uid: int | str | None = None,
+    *,
+    received_at: datetime | None = None,
+) -> IngestionResult:
     """Process a single email payload and persist relevant records.
 
     The function handles idempotency using the Message-ID or IMAP UID. It
@@ -88,6 +105,9 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
 
     existing = db.execute(select(Contact).where(Contact.email == email_val)).scalar_one_or_none()
 
+    subject = headers.get("Subject") if headers else None
+    excerpt = _build_body_excerpt(body)
+
     if existing:
         contact = existing
         changed = False
@@ -96,6 +116,10 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
             if value and not getattr(contact, key):
                 setattr(contact, key, value)
                 changed = True
+        contact.last_message_subject = subject or contact.last_message_subject
+        contact.last_message_received_at = received_at or contact.last_message_received_at
+        contact.last_message_excerpt = excerpt
+        is_new_contact = False
         if changed:
             db.add(contact)
     else:
@@ -106,9 +130,13 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
             phone=fields.get("phone"),
             org=fields.get("org"),
             source="email",
+            last_message_subject=subject,
+            last_message_received_at=received_at,
+            last_message_excerpt=excerpt,
         )
         db.add(contact)
         db.flush()  # populate primary key
+        is_new_contact = True
 
     event = ContactEvent(
         contact_id=contact.id,
@@ -116,6 +144,8 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
         payload={
             "headers": headers,
             "extracted": fields,
+            "received_at": received_at.isoformat() if received_at else None,
+            "body_excerpt": excerpt,
         },
     )
     db.add(event)
@@ -132,4 +162,14 @@ def process_incoming_email(db, headers: dict[str, str] | None, body: str, imap_u
     if final_context.get("message_id") is None:
         final_context["message_id"] = str(contact.id)
     logger.info("Email ingested successfully", extra={**final_context, "esito": "ingested"})
-    return IngestionResult({"status": "processed", "contact_id": contact.id})
+    return IngestionResult(
+        {
+            "status": "processed",
+            "contact_id": contact.id,
+            "created": is_new_contact,
+            "extracted": fields,
+            "subject": subject,
+            "received_at": received_at,
+            "body_excerpt": excerpt,
+        }
+    )

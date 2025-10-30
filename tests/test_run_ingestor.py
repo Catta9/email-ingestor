@@ -56,3 +56,16 @@ def test_runner_logs_domain_skip(session_factory, caplog):
     with session_cls() as verify_db:
         stored = verify_db.execute(select(run_ingestor.ProcessedMessage)).scalars().all()
     assert stored, "ProcessedMessage should be recorded"
+
+
+def test_matches_lead_keywords_default_keywords(monkeypatch):
+    monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
+    headers = {"Subject": "Richiesta preventivo"}
+    assert run_ingestor.matches_lead_keywords(headers, "") is True
+
+
+def test_matches_lead_keywords_custom(monkeypatch):
+    monkeypatch.setenv("LEAD_KEYWORDS", "budget")
+    headers = {"Subject": "Richiesta informazioni"}
+    assert run_ingestor.matches_lead_keywords(headers, "Serve un budget rapido") is True
+    assert run_ingestor.matches_lead_keywords(headers, "Nessuna parola chiave") is False

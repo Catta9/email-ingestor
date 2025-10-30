@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import suppress
-from email.utils import parseaddr
+from datetime import datetime
+from email.utils import parseaddr, parsedate_to_datetime
 
 from dotenv import load_dotenv
 from sqlalchemy import select
@@ -18,11 +19,23 @@ from libs.email_utils import (
     search_since_days,
 )
 from libs.ingestor import extract_sender_domain, process_incoming_email
+from libs.lead_storage import ExcelLeadWriter
+from libs.notifier import EmailNotifier
 
 load_dotenv()
 
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_KEYWORDS = [
+    "preventivo",
+    "quotazione",
+    "prezzo",
+    "offerta",
+    "proposal",
+    "estimate",
+]
+
 
 def allowed_sender(headers: dict) -> tuple[bool, str | None]:
     raw_from = headers.get("From") or ""
@@ -43,6 +56,36 @@ def allowed_sender(headers: dict) -> tuple[bool, str | None]:
         return True, None
 
     return False, f"Sender domain not allowed: {domain}"
+
+
+def parse_received_at(headers: dict[str, str]) -> datetime | None:
+    raw_date = headers.get("Date") or headers.get("date")
+    if not raw_date:
+        return None
+    try:
+        return parsedate_to_datetime(raw_date)
+    except Exception:
+        return None
+
+
+def _keywords_from_env() -> list[str]:
+    raw = os.getenv("LEAD_KEYWORDS")
+    if raw is None:
+        return DEFAULT_KEYWORDS
+    parts = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    return parts
+
+
+def matches_lead_keywords(headers: dict[str, str], body: str) -> bool:
+    keywords = _keywords_from_env()
+    if not keywords:
+        return True
+
+    haystack = " ".join([
+        headers.get("Subject") or "",
+        body,
+    ]).lower()
+    return any(keyword in haystack for keyword in keywords)
 
 
 def _already_processed(db, message_id: str | None, uid_str: str | None) -> bool:
@@ -97,6 +140,9 @@ def main():
     folder = os.getenv("IMAP_FOLDER", "INBOX")
     since_days = int(os.getenv("IMAP_SEARCH_SINCE_DAYS", "7"))
 
+    excel_writer = ExcelLeadWriter.from_env()
+    notifier = EmailNotifier.from_env()
+
     client = get_imap_client()
     ## apre IMAP e cerca i messaggi recenti
     try:
@@ -142,7 +188,24 @@ def main():
                     continue
 
                 body = get_text_body(msg)
-                result = process_incoming_email(db, headers=headers, body=body, imap_uid=uid)
+                if not matches_lead_keywords(headers, body):
+                    _mark_sender_disallowed(
+                        db,
+                        message_id=msg_id or None,
+                        uid_str=uid_str,
+                        from_domain=from_domain,
+                        reason="Missing lead keywords",
+                    )
+                    continue
+
+                received_at = parse_received_at(headers)
+                result = process_incoming_email(
+                    db,
+                    headers=headers,
+                    body=body,
+                    imap_uid=uid,
+                    received_at=received_at,
+                )
 
                 result_context = {**log_context}
                 contact_id = result.get("contact_id")
@@ -150,6 +213,28 @@ def main():
                     result_context["contact_id"] = contact_id
 
                 if result["status"] == "processed":
+                    if result.get("created"):
+                        lead_payload = {
+                            "inserted_at": datetime.utcnow(),
+                            "email": result["extracted"].get("email"),
+                            "first_name": result["extracted"].get("first_name"),
+                            "last_name": result["extracted"].get("last_name"),
+                            "company": result["extracted"].get("org"),
+                            "phone": result["extracted"].get("phone"),
+                            "subject": result.get("subject"),
+                            "received_at": result.get("received_at"),
+                            "notes": result.get("body_excerpt"),
+                        }
+                        if excel_writer:
+                            excel_writer.append(lead_payload)
+                        if notifier:
+                            with suppress(Exception):
+                                notifier.send_new_lead({
+                                    **{k: v for k, v in lead_payload.items() if isinstance(v, str)},
+                                    "received_at": lead_payload["received_at"].isoformat()
+                                    if isinstance(lead_payload.get("received_at"), datetime)
+                                    else str(lead_payload.get("received_at") or ""),
+                                })
                     logger.info(
                         "Email processed",
                         extra={**result_context, "esito": "ingested"},

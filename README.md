@@ -4,8 +4,9 @@ Un tool **didattico e production-minded** che:
 1) legge email da una casella IMAP (es. Gmail),
 2) estrae campi chiave (nome, email, telefono, azienda) con **regex semplici**,
 3) salva tutto in un **database SQLite** (estendibile a Postgres),
-4) espone una piccola **API FastAPI** per consultare i contatti e
-5) consente **export in Excel** con un endpoint.
+4) aggiorna automaticamente un **file Excel** (`data/leads.xlsx`) pronto per l'import in CRM/Google Sheets,
+5) espone una piccola **API FastAPI** per consultare i contatti e
+6) consente **export in Excel** con un endpoint.
 
 > Obiettivo: imparare a progettare un sistema di ingestion end-to-end (idempotenza, parsing, storage, export).
 
@@ -42,6 +43,7 @@ uvicorn app.main:app --reload
 ```bash
 python scripts/run_ingestor.py
 ```
+Ogni nuovo lead (matching parole chiave) viene salvato nel DB e nel file `data/leads.xlsx`.
 
 ### 5) (Opzione) Scheduler ogni 5 minuti
 ```bash
@@ -68,8 +70,11 @@ email_ingestor_mvp/
 │  ├─ models.py         # SQLAlchemy ORM (contacts, contact_events, processed_messages)
 │  ├─ parser.py         # Estrazione campi (regex/header)
 │  ├─ email_utils.py    # Utilità per IMAP & parsing raw email
+│  ├─ ingestor.py       # Logica di idempotenza + salvataggio contatti
+│  ├─ lead_storage.py   # Append automatico al file Excel dei lead
+│  └─ notifier.py       # Invio mail di notifica (facoltativo)
 ├─ scripts/
-│  ├─ run_ingestor.py   # Esegue il fetch+process
+│  ├─ run_ingestor.py   # Esegue il fetch+process (filtra keyword, aggiorna Excel, invia notifiche)
 │  └─ scheduler.py      # Esegue run_ingestor periodicamente (APScheduler)
 ├─ data/                # SQLite DB file
 ├─ sample_emails/       # Esempi .eml per test locale
@@ -83,6 +88,11 @@ email_ingestor_mvp/
 ## 🔄 Da SQLite a Postgres
 - Cambia la `DATABASE_URL` in `libs/db.py`.
 - Aggiungi Alembic per migrazioni schema.
+
+## 📬 Configurazione avanzata
+- **Parole chiave lead**: variabile `LEAD_KEYWORDS` (lista separata da virgola). Default: `preventivo, quotazione, prezzo, offerta, proposal, estimate`.
+- **File Excel**: `LEADS_XLSX_PATH` per scegliere il percorso di output (default `data/leads.xlsx`).
+- **Notifiche email** (facoltative): imposta `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SENDER` e `NOTIFY_RECIPIENTS` per ricevere un alert ogni nuovo lead.
 
 ---
 

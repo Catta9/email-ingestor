@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import FastAPI, Response
+from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from io import BytesIO
@@ -35,6 +35,11 @@ def list_contacts(limit: int = 100, offset: int = 0):
                 "org": c.org,
                 "source": c.source,
                 "created_at": c.created_at.isoformat(),
+                "last_message_subject": c.last_message_subject,
+                "last_message_received_at": c.last_message_received_at.isoformat()
+                if c.last_message_received_at
+                else None,
+                "last_message_excerpt": c.last_message_excerpt,
             } for c in rows
         ]
 
@@ -47,12 +52,33 @@ def export_xlsx():
     wb = Workbook()
     ws = wb.active
     ws.title = "Contacts"
-    headers = ["id", "email", "first_name", "last_name", "phone", "org", "source", "created_at"]
+    headers = [
+        "id",
+        "email",
+        "first_name",
+        "last_name",
+        "phone",
+        "org",
+        "source",
+        "created_at",
+        "last_message_subject",
+        "last_message_received_at",
+        "last_message_excerpt",
+    ]
     ws.append(headers)
     for c in rows:
         ws.append([
-            c.id, c.email, c.first_name, c.last_name, c.phone, c.org, c.source,
-            c.created_at.isoformat() if c.created_at else None
+            c.id,
+            c.email,
+            c.first_name,
+            c.last_name,
+            c.phone,
+            c.org,
+            c.source,
+            c.created_at.isoformat() if c.created_at else None,
+            c.last_message_subject,
+            c.last_message_received_at.isoformat() if c.last_message_received_at else None,
+            c.last_message_excerpt,
         ])
 
     buf = BytesIO()

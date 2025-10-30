@@ -4,6 +4,8 @@ import logging
 
 from sqlalchemy import select
 
+from datetime import datetime
+
 from libs.ingestor import process_incoming_email
 from libs.models import Contact, ContactEvent, ProcessedMessage
 
@@ -22,9 +24,17 @@ def test_process_incoming_email_creates_contact(session):
     Phone: +39 333 1234567
     Company: Example Inc
     """
-    result = process_incoming_email(session, headers=_make_headers(), body=body, imap_uid=101)
+    received_at = datetime(2024, 9, 24, 10, 30)
+    result = process_incoming_email(
+        session,
+        headers=_make_headers(),
+        body=body,
+        imap_uid=101,
+        received_at=received_at,
+    )
 
     assert result["status"] == "processed"
+    assert result["created"] is True
     contact_id = result["contact_id"]
 
     contact = session.execute(select(Contact).where(Contact.id == contact_id)).scalar_one()
@@ -33,6 +43,9 @@ def test_process_incoming_email_creates_contact(session):
     assert contact.last_name == "Doe"
     assert contact.phone.endswith("1234567")
     assert contact.org == "Example Inc"
+    assert contact.last_message_subject == "New lead"
+    assert contact.last_message_received_at == received_at
+    assert "Hello" in (contact.last_message_excerpt or "")
 
     events = session.execute(select(ContactEvent)).scalars().all()
     assert len(events) == 1
@@ -49,6 +62,7 @@ def test_process_incoming_email_is_idempotent(session):
 
     first = process_incoming_email(session, headers=headers, body=body, imap_uid=202)
     assert first["status"] == "processed"
+    assert first["created"] is True
 
     second = process_incoming_email(session, headers=headers, body=body, imap_uid=202)
     assert second["status"] == "skipped"
