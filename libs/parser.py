@@ -1,5 +1,6 @@
-from typing import Optional, Dict
 from __future__ import annotations
+
+from typing import Optional, Dict
 import re
 from email.utils import parseaddr
 
