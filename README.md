@@ -1,133 +1,213 @@
-# Email → CRM/Excel Ingestor (MVP)
+Email Ingestor – Lead Extraction & Scoring (IMAP → DB/Excel)
 
-Un tool **didattico e production-minded** che:
-1) legge email da una casella IMAP (es. Gmail),
-2) estrae campi chiave (nome, email, telefono, azienda) con **regex semplici**,
-3) salva tutto in un **database SQLite** (estendibile a Postgres),
-4) aggiorna automaticamente un **file Excel** (`data/leads.xlsx`) pronto per l'import in CRM/Google Sheets,
-5) espone una piccola **API FastAPI** per consultare i contatti e
-6) consente **export in Excel** con un endpoint.
+Automazione che legge email via IMAP, estrae contatti (nome, email, telefono, azienda), li salva su SQLite ed Excel, invia una notifica SMTP e valuta la rilevanza del messaggio con:
 
-> Obiettivo: imparare a progettare un sistema di ingestion end-to-end (idempotenza, parsing, storage, export).
+Rule-based scoring (parole chiave / frasi negative, soglie)
 
----
+ML Naive Bayes (training locale su dataset JSONL)
 
-## ⚙️ Setup rapido
+Strategia ibrida (usa ML, fallback su rule-based)
 
-### Requisiti
-- Python 3.11+
-- (Opzionale) virtualenv
-- Una casella email IMAP (es. Gmail) **con accesso IMAP attivo**  
-  - Gmail: preferibile **App Password** (account con 2FA) oppure IMAP via OAuth2 (non incluso in questo MVP).
+Pensato per PMI, freelance e team che vogliono centralizzare richieste clienti da email e form.
 
-### 1) Clona e crea l'env
-```bash
-cd /percorso/dove/vuoi
+Caratteristiche & Stack
+
+Python 3.11+, FastAPI (API), SQLAlchemy 2.x (SQLite di default), openpyxl (export Excel)
+
+IMAPClient (fetch email), parsing MIME robusto (HTML→testo con beautifulsoup4)
+
+SMTP per email di riepilogo
+
+Idempotenza (no duplicati) con tabella processed_messages (Message-ID/UID)
+
+Lead Scoring: Rule-based, ML (Naive Bayes) o Hybrid
+
+Script di training modello ML + salvataggio JSON & metriche
+
+PyTest + GitHub Actions (Tests)
+
+Scheduler semplice (APS) o integrazione con cron/Task Scheduler
+
+Requisiti
 python -m venv .venv
-source .venv/bin/activate  # Windows: .venv\Scripts\activate
+# Windows PowerShell
+.\.venv\Scripts\Activate.ps1
+# macOS/Linux
+# source .venv/bin/activate
+
 pip install -r requirements.txt
-```
 
-### 2) Configura l'ambiente
-Copia `.env.example` in `.env` e compila con le tue credenziali IMAP.
 
-### 3) Avvia l'API
-```bash
+requirements.txt include beautifulsoup4 per il parsing HTML.
+
+Configurazione (.env)
+
+Duplica .env.example → .env e compila:
+
+IMAP (lettura email)
+IMAP_HOST=imap.gmail.com
+IMAP_PORT=993
+IMAP_USERNAME=tuoindirizzo@gmail.com
+IMAP_PASSWORD=app_password_gmail
+IMAP_FOLDER=INBOX
+IMAP_SEARCH_SINCE_DAYS=3
+
+
+Gmail richiede App Password con 2FA attiva.
+
+Filtri mittente / keyword (pre-filtro)
+ALLOWED_SENDER_DOMAINS=azienda.it,partner.com   # vuoto = accetta tutti
+KEYWORDS_INCLUDE=preventivo,richiesta,contatto
+KEYWORDS_EXCLUDE=newsletter,spam,offerta
+
+SMTP (notifica)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=tuoindirizzo@gmail.com
+SMTP_PASSWORD=app_password_gmail
+SMTP_FROM="Email Ingestor <tuoindirizzo@gmail.com>"
+NOTIFY_RECIPIENTS=me@azienda.it, collega@azienda.it
+
+Database & Export
+DATABASE_URL=sqlite:///./data/app.db
+EXCEL_PATH=./data/leads.xlsx
+EXCEL_HEADERS=name,email,phone,company,date
+
+Lead Scoring (Rule-based, ML, Hybrid)
+LEAD_CLASSIFIER_STRATEGY=hybrid     # rule_based | ml | hybrid
+
+# Rule-based
+LEAD_KEYWORDS=preventivo,richiesta,quotazione,offerta,informazioni
+LEAD_NEGATIVE_KEYWORDS=non interessato,solo info,no acquisto
+LEAD_SCORE_THRESHOLD=2.0
+
+# ML
+LEAD_MODEL_PATH=artifacts/lead_classifier.json
+LEAD_MODEL_THRESHOLD=0.5
+
+Logging & Scheduler
+LOG_LEVEL=INFO
+SCHEDULER_INTERVAL_MINUTES=5
+
+
+Sicurezza: non committare .env. Usa account di test per sviluppo.
+
+Esecuzione (end-to-end)
+1) Ingestor IMAP
+python -m scripts.run_ingestor
+
+
+Cosa fa:
+
+connette IMAP, legge messaggi recenti
+
+applica pre-filtri (domini/keyword)
+
+calcola lead score (rule-based/ML/hybrid)
+
+salva su DB + Excel
+
+invia notifica SMTP (se configurata)
+
+evita duplicati (Message-ID/UID)
+
+2) Scheduler (facoltativo)
+python -m scripts.scheduler
+
+
+Esegue l’ingestor ogni SCHEDULER_INTERVAL_MINUTES.
+
+Export & API
+
+Excel: file creato/aggiornato in EXCEL_PATH (default ./data/leads.xlsx)
+
+API FastAPI (se abilitate nel progetto):
+
+GET /health → stato servizio
+
+GET /contacts?limit&offset → lista contatti (DB)
+
+GET /export/xlsx → scarica export Excel corrente
+
+Avvio API:
+
 uvicorn app.main:app --reload
-```
-- Healthcheck: <http://127.0.0.1:8000/health>
-- Lista contatti: <http://127.0.0.1:8000/contacts>
-- Export Excel: <http://127.0.0.1:8000/export/xlsx>
 
-### 4) Esegui l'ingestor (una tantum)
-```bash
-python scripts/run_ingestor.py
-```
-Ogni nuovo lead (matching parole chiave) viene salvato nel DB e nel file `data/leads.xlsx`.
+Addestramento modello ML
+Dataset
 
-### 5) (Opzione) Scheduler ogni 5 minuti
-```bash
-python scripts/scheduler.py
-```
+Formato JSONL (una riga = un record):
 
-### 6) Verifica automatica con pytest
-```bash
-pytest
-```
-La suite copre API, ingestion, parser, writer Excel e notifier: deve passare interamente in locale prima di consegnare modifiche.
+{"subject":"Richiesta preventivo","body":"Buongiorno, vorrei un preventivo...","label":1}
+{"subject":"Newsletter ottobre","body":"Scopri le novità...","label":0}
 
----
 
-## 🧠 Concetti chiave che vedrai qui
-- **Idempotenza**: non rielaboriamo due volte la stessa email (chiave = `Message-ID` o `UID` IMAP).
-- **Parsing robusto**: prima regex & header extraction, in futuro NER/LLM.
-- **Normalizzazione**: tabella `contacts` + `contact_events` per audit.
-- **Estendibilità**: facile portare da SQLite a Postgres; facile aggiungere parsers specifici dominio.
+Percorso di default: datasets/lead_training.jsonl
 
----
+Training
+python -m scripts.train_classifier \
+  --dataset datasets/lead_training.jsonl \
+  --output artifacts \
+  --test-size 0.2 \
+  --random-state 42
 
-## 🗄️ Struttura
-```
-email_ingestor_mvp/
-├─ app/
-│  └─ main.py           # API (FastAPI)
-├─ libs/
-│  ├─ db.py             # Engine, session, Base
-│  ├─ models.py         # SQLAlchemy ORM (contacts, contact_events, processed_messages)
-│  ├─ parser.py         # Estrazione campi (regex/header)
-│  ├─ email_utils.py    # Utilità per IMAP & parsing raw email
-│  ├─ ingestor.py       # Logica di idempotenza + salvataggio contatti
-│  ├─ lead_storage.py   # Append automatico al file Excel dei lead
-│  └─ notifier.py       # Invio mail di notifica (facoltativo)
-├─ scripts/
-│  ├─ run_ingestor.py   # Esegue il fetch+process (filtra keyword, aggiorna Excel, invia notifiche)
-│  └─ scheduler.py      # Esegue run_ingestor periodicamente (APScheduler)
-├─ data/                # SQLite DB file
-├─ sample_emails/       # Esempi .eml per test locale
-├─ .env.example
-├─ requirements.txt
-└─ README.md
-```
 
----
+Output:
 
-## 🔄 Da SQLite a Postgres
-- Cambia la `DATABASE_URL` in `libs/db.py`.
-- Aggiungi Alembic per migrazioni schema.
+artifacts/lead_classifier.json (modello in JSON)
 
-## 📬 Configurazione avanzata
-- **Parole chiave lead**: variabile `LEAD_KEYWORDS` (lista separata da virgola). Default: `preventivo, quotazione, prezzo, offerta, proposal, estimate`. Il classificatore espande automaticamente plurali, sinonimi comuni e frasi multi-parola (es. "quote request", "stima costi").
-- **Soglia scoring**: `LEAD_SCORE_THRESHOLD` (float, default `2.0`) regola quanto deve essere alta la somma pesata di subject/body/header per considerare l'email un lead.
-- **Keyword negative**: `LEAD_NEGATIVE_KEYWORDS` (lista separata da virgola) permette di escludere contesti come "non serve preventivo" o "solo informazioni generiche".
-- **File Excel**: `LEADS_XLSX_PATH` per scegliere il percorso di output (default `data/leads.xlsx`).
-- **Notifiche email** (facoltative): imposta `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SENDER` e `NOTIFY_RECIPIENTS` per ricevere un alert ogni nuovo lead.
+artifacts/lead_classifier.metrics.txt (Accuracy/Precision/Recall/F1, TP/FP/TN/FN)
 
-## 🔍 Algoritmo di scoring lead
-Il modulo `LeadRelevanceScorer` normalizza subject, corpo e intestazioni (lowercase, stopword removal, stemming leggero per pattern come `preventiv`, `quotaz`, `offert`). Ogni segmento contribuisce allo score con pesi differenti (subject > corpo > intestazioni) e vengono riconosciute sia keyword singole sia frasi multi-parola/sinonimi configurati. La presenza di keyword negative annulla lo score. L'email è considerata lead solo se lo score finale supera `LEAD_SCORE_THRESHOLD`.
+Uso del modello
 
----
+Imposta nel .env:
 
-## 🔐 Note sicurezza
-- Non committare `.env` con credenziali reali.
-- PII: tratta i dati come sensibili (export cifrati, retention, opt-out su richiesta).
+LEAD_CLASSIFIER_STRATEGY=ml     # o hybrid
+LEAD_MODEL_PATH=artifacts/lead_classifier.json
+LEAD_MODEL_THRESHOLD=0.5
 
----
 
-## ✅ Roadmap
-- [x] Unit test (pytest) per parser e idempotenza (✔ `pytest`)
-- [ ] Alembic + Postgres
-- [ ] Gmail OAuth2
-- [ ] UI web per revisione contatti
-- [ ] Modello ML/LLM per parsing avanzato
+Poi rilancia l’ingestor.
 
-## 🔁 Piano transizione FastAPI lifespan
-Per eliminare il warning su `@app.on_event("startup")` e preparare l'API a FastAPI 1.0:
+Hybrid: prova ML; se il modello non è disponibile, usa rule-based.
 
-1. **Mappare gli hook esistenti.** In `app/main.py` oggi chiamiamo `init_db()` dentro l'evento `startup`. Documentare qualsiasi altra inizializzazione nascosta nei moduli importati.
-2. **Introdurre un lifespan context.** Convertire l'app in:
-   ```python
-   app = FastAPI(title="Email → CRM/Excel Ingestor", lifespan=lifespan)
-   ```
-   dove `lifespan` è un async context manager che richiama `init_db()` nella sezione `yield`.
-3. **Aggiornare i test.** Garantire che i test FastAPI utilizzino `AsyncClient`/`LifespanManager` o l'opzione `lifespan="on"` per inizializzare il contesto.
-4. **Rimuovere gli eventi deprecati.** Eliminare `@app.on_event` e il warning scomparirà mantenendo la compatibilità futura.
+Test & CI
+
+Esecuzione locale:
+
+pytest -v
+
+
+La pipeline GitHub Actions (Tests) esegue i test su ogni push/PR.
+
+Troubleshooting rapido
+
+ModuleNotFoundError: libs.db → lancia con python -m scripts.run_ingestor dalla root del progetto.
+
+Gmail: “Application-specific password required” → usa App Password con 2FA attiva.
+
+no such column ... dopo aggiornamenti schema → elimina data/app.db (ambiente locale) e rilancia per ricrearlo.
+
+Errore MIME (multipart/alternative) → assicurati di avere beautifulsoup4 installato (già in requirements.txt).
+
+Roadmap
+
+ IMAP ingest, parsing MIME (HTML→testo), export Excel
+
+ Idempotenza (ProcessedMessage), notifiche SMTP
+
+ Rule-based scoring, ML Naive Bayes + training script
+
+ Test (pytest) + CI
+
+ Alembic + Postgres
+
+ OAuth Gmail (IMAP) / Microsoft 365
+
+ Docker Compose (app + db) e profili prod
+
+ UI web per revisione/annotazione lead
+
+ Modelli ML più avanzati (n-gram, TF-IDF, transformer leggeri)
+
+ Metrica/monitoraggio (prometheus/exporter)
