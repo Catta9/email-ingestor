@@ -58,14 +58,46 @@ def test_runner_logs_domain_skip(session_factory, caplog):
     assert stored, "ProcessedMessage should be recorded"
 
 
-def test_matches_lead_keywords_default_keywords(monkeypatch):
+def test_lead_scorer_detects_linguistic_variants(monkeypatch):
     monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
-    headers = {"Subject": "Richiesta preventivo"}
+    monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
+    monkeypatch.delenv("LEAD_NEGATIVE_KEYWORDS", raising=False)
+    run_ingestor._LEAD_SCORER = None
+
+    headers = {"Subject": "Richiesta preventivi"}
     assert run_ingestor.matches_lead_keywords(headers, "") is True
 
+    run_ingestor._LEAD_SCORER = None
+    headers = {"Subject": "Quote request for services"}
+    assert run_ingestor.matches_lead_keywords(headers, "") is True
 
-def test_matches_lead_keywords_custom(monkeypatch):
-    monkeypatch.setenv("LEAD_KEYWORDS", "budget")
+    run_ingestor._LEAD_SCORER = None
     headers = {"Subject": "Richiesta informazioni"}
-    assert run_ingestor.matches_lead_keywords(headers, "Serve un budget rapido") is True
-    assert run_ingestor.matches_lead_keywords(headers, "Nessuna parola chiave") is False
+    body = "Serve una quotazione urgente"
+    assert run_ingestor.matches_lead_keywords(headers, body) is False
+
+
+def test_lead_scorer_handles_negative_keywords(monkeypatch):
+    monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
+    monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
+    monkeypatch.setenv("LEAD_NEGATIVE_KEYWORDS", "non serve preventivo")
+    run_ingestor._LEAD_SCORER = None
+
+    headers = {"Subject": "Richiesta preventivo"}
+    body = "In realta non serve preventivo al momento"
+    assert run_ingestor.matches_lead_keywords(headers, body) is False
+
+
+def test_lead_scorer_combines_subject_and_body(monkeypatch):
+    monkeypatch.delenv("LEAD_KEYWORDS", raising=False)
+    monkeypatch.setenv("LEAD_SCORE_THRESHOLD", "2.0")
+    monkeypatch.delenv("LEAD_NEGATIVE_KEYWORDS", raising=False)
+    run_ingestor._LEAD_SCORER = None
+
+    headers = {"Subject": "Richiesta informazioni"}
+    body = "Vorremmo una quotazione e un'offerta dettagliata"
+    assert run_ingestor.matches_lead_keywords(headers, body) is True
+
+    run_ingestor._LEAD_SCORER = None
+    body = "Vorremmo solo una quotazione"
+    assert run_ingestor.matches_lead_keywords(headers, body) is False
