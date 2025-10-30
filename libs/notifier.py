@@ -57,11 +57,12 @@ class EmailNotifier:
         msg["From"] = self.sender
         msg["To"] = ", ".join(self.recipients)
 
+        company = lead.get("org") or lead.get("company") or ""
         lines = [
             "Nuovo lead inserito automaticamente:",
             f"Nome: {lead.get('first_name', '')} {lead.get('last_name', '')}",
             f"Email: {lead.get('email', '')}",
-            f"Azienda: {lead.get('company', '')}",
+            f"Azienda: {company}",
             f"Telefono: {lead.get('phone', '')}",
             f"Ricevuto alle: {lead.get('received_at', '')}",
             "",
