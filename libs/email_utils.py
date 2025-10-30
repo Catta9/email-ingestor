@@ -44,25 +44,39 @@ def extract_headers(msg) -> dict[str, str]:
     return headers
 
 ## estrae il corpo testo (text/plain) dall'email 
-def get_text_body(msg) -> str:
-    if msg.is_multipart():
-        for part in msg.walk():
-            if part.get_content_type() == "text/plain":
-                try:
-                    return part.get_content().strip()
-                except Exception:
-                    return part.get_payload(decode=True).decode(errors="ignore")
-        # fallback to first part
-        part = msg.get_payload(0)
-        try:
-            return part.get_content().strip()
-        except Exception:
-            return part.get_payload(decode=True).decode(errors="ignore")
-    else:
-        try:
-            return msg.get_content().strip()
-        except Exception:
-            return msg.get_payload(decode=True).decode(errors="ignore")
+from bs4 import BeautifulSoup
+
+def get_text_body(msg):
+    """
+    Estrae il testo leggibile dal messaggio email.
+    Gestisce multipart/alternative, HTML e payload mancanti.
+    """
+    try:
+        if msg.is_multipart():
+            for part in msg.walk():
+                ctype = part.get_content_type()
+                disp = str(part.get("Content-Disposition") or "").lower()
+                # preferisci text/plain, ma accetta text/html se non trovi altro
+                if ctype == "text/plain" and "attachment" not in disp:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        return payload.decode(part.get_content_charset() or "utf-8", errors="ignore").strip()
+                elif ctype == "text/html" and "attachment" not in disp:
+                    payload = part.get_payload(decode=True)
+                    if payload:
+                        # fallback: estrai testo dal HTML
+                        soup = BeautifulSoup(payload, "html.parser")
+                        return soup.get_text(separator=" ", strip=True)
+        else:
+            # messaggio non multipart
+            payload = msg.get_payload(decode=True)
+            if payload:
+                return payload.decode(msg.get_content_charset() or "utf-8", errors="ignore").strip()
+    except Exception as e:
+        print(f"[warn] Failed to parse body: {e}")
+
+    return ""
+
 
 ## seleziona la cartella (es. INBOX) e cerca le email ricevute negli ultimi N giorni
 def search_since_days(client: IMAPClient, folder: str, since_days: int):
