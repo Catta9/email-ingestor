@@ -21,6 +21,31 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+if "bs4" not in sys.modules:
+    class _FallbackBeautifulSoup:
+        def __init__(self, raw_html: bytes | str, parser: str = "html.parser") -> None:
+            if isinstance(raw_html, bytes):
+                text = raw_html.decode("utf-8", errors="ignore")
+            else:
+                text = raw_html or ""
+            self._text = text
+
+        def get_text(self, separator: str = " ", strip: bool = False) -> str:
+            import re
+
+            text = re.sub(r"<[^>]+>", " ", self._text)
+            text = re.sub(r"\s+", " ", text)
+            if strip:
+                text = text.strip()
+            if separator != " ":
+                return separator.join([part for part in text.split(" ") if part])
+            return text
+
+    bs4_stub = ModuleType("bs4")
+    bs4_stub.BeautifulSoup = _FallbackBeautifulSoup  # type: ignore[attr-defined]
+    sys.modules["bs4"] = bs4_stub
+
+
 try:  # pragma: no cover - exercised implicitly in environments lacking httpx
     import httpx  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover

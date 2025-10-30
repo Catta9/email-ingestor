@@ -19,6 +19,7 @@ from libs.email_utils import (
     search_since_days,
 )
 from libs.ingestor import extract_sender_domain, process_incoming_email
+from libs.lead_classifier import LeadRelevanceScorer
 from libs.lead_storage import ExcelLeadWriter
 from libs.notifier import EmailNotifier
 
@@ -26,16 +27,6 @@ load_dotenv()
 
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_KEYWORDS = [
-    "preventivo",
-    "quotazione",
-    "prezzo",
-    "offerta",
-    "proposal",
-    "estimate",
-]
-
 
 def allowed_sender(headers: dict) -> tuple[bool, str | None]:
     raw_from = headers.get("From") or ""
@@ -68,24 +59,20 @@ def parse_received_at(headers: dict[str, str]) -> datetime | None:
         return None
 
 
-def _keywords_from_env() -> list[str]:
-    raw = os.getenv("LEAD_KEYWORDS")
-    if raw is None:
-        return DEFAULT_KEYWORDS
-    parts = [item.strip().lower() for item in raw.split(",") if item.strip()]
-    return parts
+_LEAD_SCORER: LeadRelevanceScorer | None = None
+
+
+def _get_lead_scorer() -> LeadRelevanceScorer:
+    global _LEAD_SCORER
+    if _LEAD_SCORER is None:
+        _LEAD_SCORER = LeadRelevanceScorer.from_env()
+    return _LEAD_SCORER
 
 
 def matches_lead_keywords(headers: dict[str, str], body: str) -> bool:
-    keywords = _keywords_from_env()
-    if not keywords:
-        return True
-
-    haystack = " ".join([
-        headers.get("Subject") or "",
-        body,
-    ]).lower()
-    return any(keyword in haystack for keyword in keywords)
+    scorer = _get_lead_scorer()
+    score = scorer.score(headers, body)
+    return score >= scorer.threshold
 
 
 def _already_processed(db, message_id: str | None, uid_str: str | None) -> bool:

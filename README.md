@@ -96,9 +96,14 @@ email_ingestor_mvp/
 - Aggiungi Alembic per migrazioni schema.
 
 ## 📬 Configurazione avanzata
-- **Parole chiave lead**: variabile `LEAD_KEYWORDS` (lista separata da virgola). Default: `preventivo, quotazione, prezzo, offerta, proposal, estimate`.
+- **Parole chiave lead**: variabile `LEAD_KEYWORDS` (lista separata da virgola). Default: `preventivo, quotazione, prezzo, offerta, proposal, estimate`. Il classificatore espande automaticamente plurali, sinonimi comuni e frasi multi-parola (es. "quote request", "stima costi").
+- **Soglia scoring**: `LEAD_SCORE_THRESHOLD` (float, default `2.0`) regola quanto deve essere alta la somma pesata di subject/body/header per considerare l'email un lead.
+- **Keyword negative**: `LEAD_NEGATIVE_KEYWORDS` (lista separata da virgola) permette di escludere contesti come "non serve preventivo" o "solo informazioni generiche".
 - **File Excel**: `LEADS_XLSX_PATH` per scegliere il percorso di output (default `data/leads.xlsx`).
 - **Notifiche email** (facoltative): imposta `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_SENDER` e `NOTIFY_RECIPIENTS` per ricevere un alert ogni nuovo lead.
+
+## 🔍 Algoritmo di scoring lead
+Il modulo `LeadRelevanceScorer` normalizza subject, corpo e intestazioni (lowercase, stopword removal, stemming leggero per pattern come `preventiv`, `quotaz`, `offert`). Ogni segmento contribuisce allo score con pesi differenti (subject > corpo > intestazioni) e vengono riconosciute sia keyword singole sia frasi multi-parola/sinonimi configurati. La presenza di keyword negative annulla lo score. L'email è considerata lead solo se lo score finale supera `LEAD_SCORE_THRESHOLD`.
 
 ---
 
