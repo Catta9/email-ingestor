@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import select
 
 from libs.ingestor import process_incoming_email
@@ -75,3 +77,20 @@ def test_process_incoming_email_idempotent_with_missing_message_id(session):
 
     processed_entries = session.execute(select(ProcessedMessage)).scalars().all()
     assert len(processed_entries) == 1
+
+
+def test_process_incoming_email_logs_duplicate(session, caplog):
+    body = "Hello"
+    headers = _make_headers()
+
+    process_incoming_email(session, headers=headers, body=body, imap_uid=404)
+
+    with caplog.at_level(logging.INFO, logger="libs.ingestor"):
+        result = process_incoming_email(session, headers=headers, body=body, imap_uid=404)
+
+    assert result["status"] == "skipped"
+    duplicate_logs = [record for record in caplog.records if getattr(record, "esito", "") == "duplicate"]
+    assert duplicate_logs, "Expected duplicate log entry"
+    record = duplicate_logs[-1]
+    assert record.imap_uid == "404"
+    assert record.message_id == "<msg-1@example.com>"
