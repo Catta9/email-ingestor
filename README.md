@@ -50,6 +50,12 @@ Ogni nuovo lead (matching parole chiave) viene salvato nel DB e nel file `data/l
 python scripts/scheduler.py
 ```
 
+### 6) Verifica automatica con pytest
+```bash
+pytest
+```
+La suite copre API, ingestion, parser, writer Excel e notifier: deve passare interamente in locale prima di consegnare modifiche.
+
 ---
 
 ## 🧠 Concetti chiave che vedrai qui
@@ -103,8 +109,20 @@ email_ingestor_mvp/
 ---
 
 ## ✅ Roadmap
-- [ ] Unit test (pytest) per parser e idempotenza
+- [x] Unit test (pytest) per parser e idempotenza (✔ `pytest`)
 - [ ] Alembic + Postgres
 - [ ] Gmail OAuth2
 - [ ] UI web per revisione contatti
 - [ ] Modello ML/LLM per parsing avanzato
+
+## 🔁 Piano transizione FastAPI lifespan
+Per eliminare il warning su `@app.on_event("startup")` e preparare l'API a FastAPI 1.0:
+
+1. **Mappare gli hook esistenti.** In `app/main.py` oggi chiamiamo `init_db()` dentro l'evento `startup`. Documentare qualsiasi altra inizializzazione nascosta nei moduli importati.
+2. **Introdurre un lifespan context.** Convertire l'app in:
+   ```python
+   app = FastAPI(title="Email → CRM/Excel Ingestor", lifespan=lifespan)
+   ```
+   dove `lifespan` è un async context manager che richiama `init_db()` nella sezione `yield`.
+3. **Aggiornare i test.** Garantire che i test FastAPI utilizzino `AsyncClient`/`LifespanManager` o l'opzione `lifespan="on"` per inizializzare il contesto.
+4. **Rimuovere gli eventi deprecati.** Eliminare `@app.on_event` e il warning scomparirà mantenendo la compatibilità futura.
