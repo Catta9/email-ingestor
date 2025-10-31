@@ -3,10 +3,9 @@ from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from io import BytesIO
-from openpyxl import Workbook
-
 from libs.db import SessionLocal, init_db
 from libs.models import Contact
+from libs.lead_storage import build_structured_workbook
 
 app = FastAPI(title="Email → CRM/Excel Ingestor")
 
@@ -49,9 +48,6 @@ def export_xlsx():
     with SessionLocal() as db:
         rows = db.execute(select(Contact)).scalars().all()
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Contacts"
     headers = [
         "id",
         "email",
@@ -65,9 +61,9 @@ def export_xlsx():
         "last_message_received_at",
         "last_message_excerpt",
     ]
-    ws.append(headers)
-    for c in rows:
-        ws.append([
+
+    data_rows = [
+        [
             c.id,
             c.email,
             c.first_name,
@@ -75,11 +71,21 @@ def export_xlsx():
             c.phone,
             c.org,
             c.source,
-            c.created_at.isoformat() if c.created_at else None,
+            c.created_at,
             c.last_message_subject,
-            c.last_message_received_at.isoformat() if c.last_message_received_at else None,
+            c.last_message_received_at,
             c.last_message_excerpt,
-        ])
+        ]
+        for c in rows
+    ]
+
+    wb = build_structured_workbook(
+        headers,
+        data_rows,
+        data_sheet_name="Contacts",
+        summary_sheet_name="Dashboard",
+        table_name="ContactsTable",
+    )
 
     buf = BytesIO()
     wb.save(buf)
