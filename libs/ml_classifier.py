@@ -8,7 +8,9 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
-from typing import Iterable
+from typing import Any, Optional
+
+import joblib
 
 
 logger = logging.getLogger(__name__)
@@ -111,6 +113,92 @@ class ModelNotAvailableError(RuntimeError):
     """Raised when the ML model cannot be loaded."""
 
 
+class _LeadModelAdapter:
+    """Internal abstraction over different model backends."""
+
+    def predict_proba(self, text: str, headers: dict[str, str]) -> float:
+        raise NotImplementedError
+
+    def recommended_threshold(self) -> Optional[float]:
+        return None
+
+
+class _NaiveBayesModelAdapter(_LeadModelAdapter):
+    def __init__(
+        self,
+        model: dict,
+        use_ngrams: bool,
+        use_features: bool,
+    ) -> None:
+        self.model = model
+        self.use_ngrams = use_ngrams
+        self.use_features = use_features
+
+    def predict_proba(self, text: str, headers: dict[str, str]) -> float:
+        tokens = _tokenize(text, EXTENDED_STOPWORDS)
+        if not tokens:
+            return 0.0
+
+        vocab_size = max(1, int(self.model.get("vocabulary_size") or 0))
+        token_counts = self.model.get("token_counts", {})
+        pos_counts: dict[str, int] = token_counts.get("1", {})
+        neg_counts: dict[str, int] = token_counts.get("0", {})
+        total_tokens = self.model.get("total_tokens", {})
+        total_pos = max(0, int(total_tokens.get("1", 0)))
+        total_neg = max(0, int(total_tokens.get("0", 0)))
+        class_priors = self.model.get("class_priors", {})
+        prior_pos = float(class_priors.get("1", 1e-9) or 1e-9)
+        prior_neg = float(class_priors.get("0", 1e-9) or 1e-9)
+
+        log_pos = math.log(prior_pos)
+        log_neg = math.log(prior_neg)
+
+        for token in tokens:
+            log_pos += math.log((pos_counts.get(token, 0) + 1) / (total_pos + vocab_size))
+            log_neg += math.log((neg_counts.get(token, 0) + 1) / (total_neg + vocab_size))
+
+        if self.use_ngrams:
+            bigrams = _extract_ngrams(tokens, n=2)
+            bigram_counts_pos = self.model.get("bigram_counts", {}).get("1", {})
+            bigram_counts_neg = self.model.get("bigram_counts", {}).get("0", {})
+
+            for bigram in bigrams:
+                log_pos += 0.5 * math.log((bigram_counts_pos.get(bigram, 0) + 1) / (total_pos + vocab_size))
+                log_neg += 0.5 * math.log((bigram_counts_neg.get(bigram, 0) + 1) / (total_neg + vocab_size))
+
+        if self.use_features:
+            features = _extract_features(text, headers)
+            feature_weights = self.model.get("feature_weights", {})
+
+            for feat_name, feat_value in features.items():
+                weight = feature_weights.get(feat_name, 0.0)
+                log_pos += feat_value * weight
+                log_neg -= feat_value * weight * 0.5
+
+        max_log = max(log_pos, log_neg)
+        pos_prob = math.exp(log_pos - max_log)
+        neg_prob = math.exp(log_neg - max_log)
+        total = pos_prob + neg_prob
+        if total == 0:
+            return 0.0
+        return pos_prob / total
+
+
+class _SklearnModelAdapter(_LeadModelAdapter):
+    def __init__(self, pipeline, threshold: Optional[float]) -> None:
+        self.pipeline = pipeline
+        self._threshold = threshold
+
+    def predict_proba(self, text: str, headers: dict[str, str]) -> float:  # noqa: ARG002
+        if not text.strip():
+            return 0.0
+        proba = self.pipeline.predict_proba([text])[0][1]
+        return float(proba)
+
+    def recommended_threshold(self) -> Optional[float]:
+        return self._threshold
+
+
 @dataclass
 class LeadModelConfig:
     model_path: Path
@@ -142,22 +230,94 @@ class LeadMLClassifier:
 
     def __init__(self, config: LeadModelConfig | None = None) -> None:
         self.config = config or LeadModelConfig.from_env()
-        self._model: dict | None = None
+        self._adapter: _LeadModelAdapter | None = None
+        self._threshold_override: Optional[float] = None
         self._lock = Lock()
 
-    def _load_model(self) -> dict:
-        if self._model is not None:
-            return self._model
+    def _resolve_model_path(self) -> Path:
+        path = self.config.model_path
+        if path.exists():
+            return path
+
+        candidates = []
+        if path.suffix.lower() != ".joblib":
+            candidates.append(path.with_suffix(".joblib"))
+        if path.suffix.lower() != ".json":
+            candidates.append(path.with_suffix(".json"))
+
+        for candidate in candidates:
+            if candidate.exists():
+                logger.warning(
+                    "Model path %s not found. Falling back to %s", path, candidate
+                )
+                return candidate
+
+        raise ModelNotAvailableError(f"Model not found at {path}")
+
+    def _load_metadata(self, model_path: Path) -> dict[str, Any]:
+        metadata_path = model_path.with_suffix(".meta.json")
+        if not metadata_path.exists():
+            return {}
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            logger.warning("Failed to decode metadata at %s: %s", metadata_path, exc)
+            return {}
+
+    def _create_adapter(self, model_path: Path) -> tuple[_LeadModelAdapter, Optional[float]]:
+        metadata = self._load_metadata(model_path)
+        threshold = metadata.get("threshold")
+        suffix = model_path.suffix.lower()
+
+        if suffix in {".joblib", ".pkl"}:
+            pipeline = joblib.load(model_path)
+            logger.info("Loaded scikit-learn model from %s", model_path)
+            adapter = _SklearnModelAdapter(pipeline, threshold)
+            return adapter, adapter.recommended_threshold()
+
+        raw = model_path.read_text(encoding="utf-8")
+        model = json.loads(raw)
+        adapter = _NaiveBayesModelAdapter(
+            model,
+            use_ngrams=self.config.use_ngrams,
+            use_features=self.config.use_features,
+        )
+        logger.info("Loaded legacy JSON model from %s", model_path)
+        return adapter, threshold
+
+    def _load_model(self) -> _LeadModelAdapter:
+        if self._adapter is not None:
+            return self._adapter
+
         with self._lock:
-            if self._model is None:
-                if not self.config.model_path.exists():
-                    raise ModelNotAvailableError(
-                        f"Model not found at {self.config.model_path}"
+            if self._adapter is not None:
+                return self._adapter
+
+            model_path = self._resolve_model_path()
+            try:
+                adapter, threshold = self._create_adapter(model_path)
+            except Exception as exc:  # pragma: no cover - defensive branch
+                legacy_path = model_path.with_suffix(".json")
+                if model_path.suffix.lower() != ".json" and legacy_path.exists():
+                    logger.warning(
+                        "Failed to load model at %s (%s). Falling back to legacy JSON %s",
+                        model_path,
+                        exc,
+                        legacy_path,
                     )
-                logger.info("Loading ML lead classifier from %s", self.config.model_path)
-                raw = self.config.model_path.read_text(encoding="utf-8")
-                self._model = json.loads(raw)
-        return self._model
+                    adapter, threshold = self._create_adapter(legacy_path)
+                else:
+                    raise ModelNotAvailableError(
+                        f"Failed to load model at {model_path}: {exc}"
+                    ) from exc
+
+            self._adapter = adapter
+            if threshold is not None:
+                try:
+                    self._threshold_override = float(threshold)
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring non-numeric threshold from metadata: %s", threshold)
+            return adapter
 
     def _combine_text(self, headers: dict[str, str], body: str) -> str:
         subject = headers.get("Subject") or headers.get("subject") or ""
@@ -169,69 +329,12 @@ class LeadMLClassifier:
 
     def score(self, headers: dict[str, str], body: str) -> float:
         """Calcola probabilità che sia un lead con feature migliorate."""
-        model = self._load_model()
         text = self._combine_text(headers, body)
         if not text:
             return 0.0
+        adapter = self._load_model()
+        probability = adapter.predict_proba(text, headers)
 
-        # Tokenizza
-        tokens = _tokenize(text, EXTENDED_STOPWORDS)
-        if not tokens:
-            return 0.0
-
-        # Estrai parametri modello
-        vocab_size = max(1, int(model.get("vocabulary_size") or 0))
-        token_counts = model.get("token_counts", {})
-        pos_counts: dict[str, int] = token_counts.get("1", {})
-        neg_counts: dict[str, int] = token_counts.get("0", {})
-        total_tokens = model.get("total_tokens", {})
-        total_pos = max(0, int(total_tokens.get("1", 0)))
-        total_neg = max(0, int(total_tokens.get("0", 0)))
-        class_priors = model.get("class_priors", {})
-        prior_pos = float(class_priors.get("1", 1e-9) or 1e-9)
-        prior_neg = float(class_priors.get("0", 1e-9) or 1e-9)
-
-        # Calcola log-probability base (unigrams)
-        log_pos = math.log(prior_pos)
-        log_neg = math.log(prior_neg)
-        
-        for token in tokens:
-            log_pos += math.log((pos_counts.get(token, 0) + 1) / (total_pos + vocab_size))
-            log_neg += math.log((neg_counts.get(token, 0) + 1) / (total_neg + vocab_size))
-
-        # Aggiungi bigrams se abilitato
-        if self.config.use_ngrams:
-            bigrams = _extract_ngrams(tokens, n=2)
-            bigram_counts_pos = model.get("bigram_counts", {}).get("1", {})
-            bigram_counts_neg = model.get("bigram_counts", {}).get("0", {})
-            
-            for bigram in bigrams:
-                # Peso ridotto per bigrams (0.5x rispetto a unigrams)
-                log_pos += 0.5 * math.log((bigram_counts_pos.get(bigram, 0) + 1) / (total_pos + vocab_size))
-                log_neg += 0.5 * math.log((bigram_counts_neg.get(bigram, 0) + 1) / (total_neg + vocab_size))
-
-        # Aggiungi feature numeriche se abilitate
-        if self.config.use_features:
-            features = _extract_features(text, headers)
-            feature_weights = model.get("feature_weights", {})
-            
-            for feat_name, feat_value in features.items():
-                weight = feature_weights.get(feat_name, 0.0)
-                # Incremento log-prob in base a feature * weight
-                log_pos += feat_value * weight
-                # Le feature negative pesano meno
-                log_neg -= feat_value * weight * 0.5
-
-        # Converti in probabilità
-        max_log = max(log_pos, log_neg)
-        pos_prob = math.exp(log_pos - max_log)
-        neg_prob = math.exp(log_neg - max_log)
-        total = pos_prob + neg_prob
-        if total == 0:
-            return 0.0
-        
-        probability = pos_prob / total
-        
         # Log confidence per debugging
         if probability > 0.9 or probability < 0.1:
             logger.debug(
@@ -239,7 +342,7 @@ class LeadMLClassifier:
                 extra={
                     "probability": probability,
                     "subject": headers.get("Subject", "")[:50],
-                    "token_count": len(tokens)
+                    "text_length": len(text),
                 }
             )
         
@@ -247,12 +350,13 @@ class LeadMLClassifier:
 
     def is_relevant(self, headers: dict[str, str], body: str) -> bool:
         score = self.score(headers, body)
-        return score >= self.config.threshold
+        threshold = self._threshold_override or self.config.threshold
+        return score >= threshold
 
     def score_with_confidence(self, headers: dict[str, str], body: str) -> tuple[float, str]:
         """Ritorna (score, confidence_level)."""
         score = self.score(headers, body)
-        
+
         if score >= 0.9:
             confidence = "high"
         elif score >= 0.7:
@@ -267,3 +371,8 @@ class LeadMLClassifier:
     @classmethod
     def from_env(cls) -> "LeadMLClassifier":
         return cls(LeadModelConfig.from_env())
+
+    @property
+    def decision_threshold(self) -> float:
+        """Expose the effective threshold used for binary decisions."""
+        return self._threshold_override or self.config.threshold
