@@ -15,6 +15,42 @@ ORG_HINTS = [
     "inc", "ltd", "llc", "corp", "corporation", "gmbh", "sarl", "limited",
 ]
 
+COMPANY_NOISE_TERMS = {
+    "marketing",
+    "vendite",
+    "ufficio",
+    "ufficio marketing",
+    "team marketing",
+    "team vendite",
+    "il mio team",
+    "il reparto",
+    "reparto marketing",
+    "dipartimento",
+}
+
+COMPANY_PATTERNS = [
+    re.compile(
+        r"\bsono\s+(?P<name>[\w'’\s\.]{2,60}?)\s+(?:di|del|della|dell'|dello)\s+(?P<company>[\w&'’\.,\-\s]{3,})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bsono\s+(?P<name>[\w'’\s\.]{2,60}?)\s+e\s+lavoro\s+(?:per|presso|in)\s+(?P<company>[\w&'’\.,\-\s]{3,})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\bmi\s+chiamo\s+(?P<name>[\w'’\s\.]{2,60}?)\s+e\s+(?:sono|lavoro)\s+(?:per|presso|in|di|del|della|dell'|dello)\s+(?P<company>[\w&'’\.,\-\s]{3,})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\blavoro\s+(?:per|presso|in)\s+(?P<company>[\w&'’\.,\-\s]{3,})",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:azienda|società|societa|company)\s+(?:si\s+chiama|chiamata|denominata)\s+(?P<company>[\w&'’\.,\-\s]{3,})",
+        re.IGNORECASE,
+    ),
+]
+
 # Pattern contestuali per telefono (label: priorità)
 PHONE_LABEL_SCORES = {
     "cell": 5, "cellulare": 5, "mobile": 5, "mobil": 5,
@@ -30,8 +66,8 @@ def normalize_whitespace(s: str) -> str:
 
 
 def set_result_name(
-    result: Dict[str, Optional[str]], 
-    full_name: str, 
+    result: Dict[str, Optional[str]],
+    full_name: str,
     overwrite: bool = False
 ) -> None:
     """Estrae first_name e last_name da nome completo."""
@@ -56,6 +92,41 @@ def set_result_name(
         result["first_name"] = first
     if last and (overwrite or not result.get("last_name")):
         result["last_name"] = last
+
+
+def _clean_company(candidate: str) -> Optional[str]:
+    candidate = normalize_whitespace(candidate)
+    candidate = candidate.strip("-•|.,;: ")
+    if len(candidate) < 3:
+        return None
+    low = candidate.lower()
+    if low in COMPANY_NOISE_TERMS:
+        return None
+    if all(word.islower() for word in low.split()):
+        # Richiedi almeno un carattere maiuscolo per evitare reparti generici
+        if not any(char.isalpha() and char.isupper() for char in candidate):
+            return None
+    return candidate
+
+
+def _try_extract_company_from_text(text: str, result: Dict[str, Optional[str]]) -> None:
+    for pattern in COMPANY_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        company_raw = match.groupdict().get("company")
+        if not company_raw:
+            continue
+        company_clean = _clean_company(company_raw)
+        if not company_clean:
+            continue
+        if not result.get("org"):
+            result["org"] = company_clean
+
+        name_raw = match.groupdict().get("name")
+        if name_raw and not result.get("first_name"):
+            set_result_name(result, name_raw)
+        break
 
 
 def get_header_addresses(
@@ -192,15 +263,18 @@ def parse_contact_fields(
             result["email"] = match.group(0)
 
     # === TELEFONO con scoring contestuale ===
-    
+
     phone_candidates: list[Tuple[int, int, str]] = []  # (score, idx, number)
     seen_numbers: set[str] = set()
-    
+
+    # === ORGANIZZAZIONE da frasi esplicite ===
+    _try_extract_company_from_text(text, result)
+
     for idx, line in enumerate(text.splitlines()):
         matches = list(PHONE_RE.finditer(line))
         if not matches:
             continue
-        
+
         low = line.lower()
         
         # Skip righe con solo fax
@@ -236,10 +310,11 @@ def parse_contact_fields(
 
     # === ORGANIZZAZIONE ===
     
-    for line in text.splitlines():
-        org = extract_org_from_line(line)
-        if org:
-            result["org"] = org
-            break
+    if not result.get("org"):
+        for line in text.splitlines():
+            org = extract_org_from_line(line)
+            if org:
+                result["org"] = org
+                break
 
     return result

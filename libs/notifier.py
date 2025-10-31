@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import smtplib
 from dataclasses import dataclass
+from datetime import datetime
 from email.message import EmailMessage
 from typing import Sequence
 
@@ -47,27 +48,14 @@ class EmailNotifier:
             use_tls=use_tls,
         )
 
-    def send_new_lead(self, lead: dict[str, str]) -> bool:
+    def _send_message(self, subject: str, lines: Sequence[str]) -> bool:
         if not self.recipients:
             return False
 
         msg = EmailMessage()
-        subject = lead.get("subject") or "Nuovo lead ricevuto"
         msg["Subject"] = subject
         msg["From"] = self.sender
         msg["To"] = ", ".join(self.recipients)
-
-        company = lead.get("org") or lead.get("company") or ""
-        lines = [
-            "Nuovo lead inserito automaticamente:",
-            f"Nome: {lead.get('first_name', '')} {lead.get('last_name', '')}",
-            f"Email: {lead.get('email', '')}",
-            f"Azienda: {company}",
-            f"Telefono: {lead.get('phone', '')}",
-            f"Ricevuto alle: {lead.get('received_at', '')}",
-            "",
-            lead.get("notes", ""),
-        ]
         msg.set_content("\n".join(lines))
 
         with smtplib.SMTP(self.host, self.port, timeout=20) as smtp:
@@ -77,3 +65,47 @@ class EmailNotifier:
                 smtp.login(self.username, self.password)
             smtp.send_message(msg)
         return True
+
+    def send_new_lead(self, lead: dict[str, str]) -> bool:
+        subject = lead.get("subject") or "Nuovo lead ricevuto"
+        company = lead.get("org") or lead.get("company") or ""
+        lines = [
+            "Nuovo lead inserito automaticamente:",
+            f"Nome: {lead.get('first_name') or ''} {lead.get('last_name') or ''}",
+            f"Email: {lead.get('email') or ''}",
+            f"Azienda: {company}",
+            f"Telefono: {lead.get('phone') or ''}",
+            f"Ricevuto alle: {lead.get('received_at') or ''}",
+            "",
+            lead.get("notes") or "",
+        ]
+        return self._send_message(subject, lines)
+
+    def send_excel_update(
+        self,
+        lead: dict[str, str],
+        *,
+        workbook_path: str,
+        row_number: int | None = None,
+    ) -> bool:
+        subject = "AVVISO: è stato aggiunto un cliente al foglio excel!"
+        timestamp = datetime.utcnow().isoformat(timespec="seconds")
+        company = lead.get("org") or lead.get("company") or ""
+        lines = [
+            subject,
+            "",
+            f"Email cliente: {lead.get('email') or ''}",
+            f"Nome: {lead.get('first_name') or ''} {lead.get('last_name') or ''}",
+            f"Azienda: {company}",
+            f"Telefono: {lead.get('phone') or ''}",
+            f"File Excel: {workbook_path}",
+        ]
+        if row_number:
+            lines.append(f"Riga inserita: {row_number}")
+        lines.extend([
+            f"Aggiornato alle: {timestamp}",
+            "",
+            "Estratto nota:",
+            lead.get("notes") or "",
+        ])
+        return self._send_message(subject, lines)

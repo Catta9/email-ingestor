@@ -39,6 +39,16 @@
 {"label": 1, "subject": "Quote request for industrial cleaning", "body": "We need a detailed estimate for deep cleaning our production facility every quarter."}
 {"label": 1, "subject": "Preventivo piattaforma e-learning", "body": "Vorremmo un'offerta per personalizzare e ospitare un portale e-learning con 500 utenti attivi."}
 {"label": 1, "subject": "Request for quotation - custom packaging", "body": "Please provide a quotation for 10,000 units of eco-friendly packaging with our branding."}
+{"label": 1, "subject": "Richiesta listino prezzi software gestionale", "body": "Salve, potete inviarci il listino prezzi aggiornato del vostro gestionale e le tariffe per il supporto annuale?"}
+{"label": 1, "subject": "Need your pricing breakdown", "body": "Hello, I'm Alex from BrightWave LLC and I'm evaluating vendors. Could you share the detailed pricing breakdown for your analytics licenses?"}
+{"label": 1, "subject": "Tariffe per manutenzione impianto industriale", "body": "Siamo interessati alle vostre tariffe annuali per la manutenzione dei nostri impianti e al canone per interventi straordinari."}
+{"label": 1, "subject": "Budget available for marketing campaign", "body": "Buongiorno, sono Chiara di Euronova S.p.A. e abbiamo un budget di 25k EUR. Potete prepararci una proposta con il dettaglio dei costi?"}
+{"label": 1, "subject": "Request for rate card", "body": "Our agency would like to review your rate card for video production services. Please include day rates and optional add-ons."}
+{"label": 1, "subject": "Preventivo per servizio di assistenza IT", "body": "Siamo interessati a un preventivo mensile per help desk 24/7 e vorremmo conoscere le vostre tariffe."}
+{"label": 1, "subject": "Quotation needed - fleet insurance", "body": "Could you provide a quotation covering our fleet of 18 vehicles along with the deductible options?"}
+{"label": 1, "subject": "Listino aggiornato per consulenza fiscale", "body": "Sono Marco di FinExpert SRL: potreste inviarci il listino aggiornato e un estimate per una consulenza trimestrale?"}
+{"label": 1, "subject": "Preventivo per servizio di traduzione tecnica", "body": "Ci serve un cost estimate dettagliato per tradurre 120 pagine di manualistica industriale in inglese e tedesco."}
+{"label": 1, "subject": "Pricing inquiry for premium support", "body": "Hi, we'd like to know the pricing options for upgrading to premium support, including SLA details."}
 {"label": 0, "subject": "Weekly newsletter - ottobre", "body": "Scopri tutte le novità del mese nella nostra newsletter aziendale."}
 {"label": 0, "subject": "Evento gratuito online", "body": "Partecipa al nostro webinar introduttivo, registrati ora senza costi."}
 {"label": 0, "subject": "Fattura disponibile", "body": "La tua fattura è pronta per il download dal portale clienti."}
@@ -72,4 +82,12 @@
 {"label": 0, "subject": "Aggiornamento bug fix", "body": "Il problema segnalato è stato risolto nell'ultima release."}
 {"label": 0, "subject": "Comunicazione interna HR", "body": "Ricordiamo a tutti di completare il corso obbligatorio entro fine mese."}
 {"label": 0, "subject": "Benvenuto nuovo cliente", "body": "Grazie per aver scelto il nostro servizio, allegata la guida di onboarding."}
+{"label": 0, "subject": "Aggiornamento interno budget marketing", "body": "Il budget della campagna è stato approvato, non sono richieste quotazioni esterne."}
+{"label": 0, "subject": "Report confronto listino", "body": "In allegato trovi il confronto prezzi già approvato: non contattare altri fornitori."}
+{"label": 0, "subject": "Richiesta informazioni generiche", "body": "Vorrei sapere se offrite formazione ma al momento non sto valutando costi o preventivi."}
+{"label": 0, "subject": "Condivisione tariffario interno", "body": "Invio il tariffario interno per revisione, documento riservato al team commerciale."}
+{"label": 0, "subject": "Note riunione commerciale", "body": "Abbiamo discusso i prezzi in riunione, nessuna risposta da inviare al cliente."}
+{"label": 0, "subject": "Aggiornamento progetto in corso", "body": "Il cliente attende il materiale già concordato, non dobbiamo preparare nuove offerte."}
+{"label": 0, "subject": "Recap team vendite", "body": "Team marketing ha già inviato l'offerta, questa email è solo un promemoria interno."}
+{"label": 0, "subject": "Newsletter partner: nuove tariffe", "body": "Ti informiamo sulle nuove tariffe disponibili, non richiediamo preventivi."}
 {"label": 0, "subject": "Avviso consegna pacco", "body": "Il corriere consegnerà il tuo pacco domani tra le 9 e le 13."}

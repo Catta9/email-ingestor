@@ -364,8 +364,9 @@ def main():
                             "received_at": result.get("received_at"),
                             "notes": result.get("body_excerpt"),
                         }
+                        excel_row = None
                         if excel_writer:
-                            excel_writer.append(lead_payload)
+                            excel_row = excel_writer.append(lead_payload)
                         if notifier:
                             with suppress(Exception):
                                 notifier.send_new_lead({
@@ -374,6 +375,17 @@ def main():
                                     if isinstance(lead_payload.get("received_at"), datetime)
                                     else str(lead_payload.get("received_at") or ""),
                                 })
+                                if excel_writer and excel_row:
+                                    notifier.send_excel_update(
+                                        {
+                                            **{k: v for k, v in lead_payload.items() if isinstance(v, str)},
+                                            "received_at": lead_payload["received_at"].isoformat()
+                                            if isinstance(lead_payload.get("received_at"), datetime)
+                                            else str(lead_payload.get("received_at") or ""),
+                                        },
+                                        workbook_path=str(excel_writer.path),
+                                        row_number=excel_row,
+                                    )
                     
                     logger.info(
                         "Email ingested successfully",

@@ -14,6 +14,11 @@ DEFAULT_KEYWORDS = [
     "offerta",
     "proposal",
     "estimate",
+    "listino",
+    "tariffa",
+    "budget",
+    "pricing",
+    "costo",
 ]
 
 DEFAULT_SYNONYMS = {
@@ -28,11 +33,14 @@ DEFAULT_SYNONYMS = {
         "stima costi",
         "cost estimate",
         "estimate request",
+        "need a quote",
+        "asking for a quote",
     ],
     "quotazione": [
         "quotazioni",
         "quotation",
         "quoting",
+        "quote",
     ],
     "offerta": [
         "offerte",
@@ -40,6 +48,8 @@ DEFAULT_SYNONYMS = {
         "proposal",
         "proposta",
         "proposte",
+        "pricing proposal",
+        "commercial offer",
     ],
     "prezzo": [
         "prezzi",
@@ -48,11 +58,45 @@ DEFAULT_SYNONYMS = {
         "costo",
         "costi",
         "cost",
+        "rate",
+        "rates",
+        "fee",
+        "fees",
+        "pricing details",
     ],
     "estimate": [
         "estimating",
         "estimates",
         "estimation",
+        "detailed estimate",
+        "rough estimate",
+    ],
+    "listino": [
+        "listino prezzi",
+        "price list",
+        "listini",
+        "listini prezzi",
+        "catalogo prezzi",
+    ],
+    "tariffa": [
+        "tariffe",
+        "tariffario",
+        "tariffario prezzi",
+        "tarifas",
+        "pricing table",
+    ],
+    "budget": [
+        "range di budget",
+        "budget indicativo",
+        "budget disponibile",
+        "stanziamento",
+        "spesa prevista",
+    ],
+    "pricing": [
+        "pricing options",
+        "pricing plan",
+        "pricing breakdown",
+        "costi e pricing",
     ],
 }
 
@@ -132,6 +176,10 @@ class LeadRelevanceScorer:
         ("cost", "costo"),
         ("estim", "estimate"),
         ("budg", "budget"),
+        ("tariff", "tariffa"),
+        ("listin", "listino"),
+        ("quot", "quotazione"),
+        ("prevent", "preventivo"),
     )
 
     def __init__(
@@ -241,11 +289,19 @@ class LeadRelevanceScorer:
         if not text:
             return 0.0
         tokens = self._tokenize(text)
-        score = sum(1 for token in tokens if token in self.keywords)
+        score = 0.0
+        matched_keywords: set[str] = set()
+        for token in tokens:
+            if token in self.keywords and token not in matched_keywords:
+                score += 1.0
+                matched_keywords.add(token)
+
         normalized_text = " ".join(tokens)
         for phrase, canonical in self.phrase_lookup:
-            if phrase and phrase in normalized_text:
-                score += 1
+            if phrase and phrase in normalized_text and canonical not in matched_keywords:
+                score += 1.0
+                matched_keywords.add(canonical)
+
         return float(score)
 
     def _has_negative_context(self, subject: str, body: str, headers: str) -> bool:
