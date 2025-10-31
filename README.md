@@ -143,7 +143,12 @@ python -m scripts.run_ingestor
 - Evita duplicati (Message-ID/UID)
 
 ### 2) Scheduler (facoltativo)
-Esegue l’ingestor ogni `SCHEDULER_INTERVAL_MINUTES`.
+Esegue l’ingestor ogni `SCHEDULER_INTERVAL_MINUTES` (default `5` minuti, valori ammessi ≥ `1`).
+Per impostare un intervallo personalizzato:
+```bash
+export SCHEDULER_INTERVAL_MINUTES=15  # esegue ogni 15 minuti
+python -m scripts.scheduler
+```
 ```bash
 python -m scripts.scheduler
 ```
