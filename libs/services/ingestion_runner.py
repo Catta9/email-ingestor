@@ -22,6 +22,12 @@ from libs.ingestor import extract_sender_domain, process_incoming_email
 from libs.lead_classifier import LeadRelevanceScorer
 from libs.lead_storage import ExcelLeadWriter
 from libs.ml_classifier import LeadMLClassifier, ModelNotAvailableError
+from libs.metrics import (
+    record_email_processed,
+    record_ingestion_error,
+    record_lead_created,
+    set_discovered_messages,
+)
 from libs.models import ProcessedMessage
 from libs.notifier import EmailNotifier
 
@@ -60,13 +66,17 @@ class IngestionRunner:
 
         def emit(event_type: str, message: str, **data: Any) -> None:
             payload: IngestionEvent = {"type": event_type, "message": message}
-            if data:
-                payload["data"] = data
+            payload_data = dict(data) if data else {}
+            payload_data.setdefault("folder", folder)
+            if payload_data:
+                payload["data"] = payload_data
             event_callback(payload)
 
         init_db()
         folder = os.getenv("IMAP_FOLDER", "INBOX")
         since_days = self._parse_since_days(os.getenv("IMAP_SEARCH_SINCE_DAYS"), default=7)
+
+        set_discovered_messages(folder=folder, total=0)
 
         excel_writer = ExcelLeadWriter.from_env()
         notifier = EmailNotifier.from_env()
@@ -93,6 +103,7 @@ class IngestionRunner:
         try:
             uids = search_since_days(client, folder, since_days)
             stats.total = len(uids)
+            set_discovered_messages(folder=folder, total=stats.total)
             emit(
                 "run_progress",
                 "Trovati %d messaggi da processare" % stats.total,
@@ -109,175 +120,183 @@ class IngestionRunner:
                     "imap_uid": uid_str,
                     "message_id": msg_id or uid_str,
                     "from_domain": from_domain,
+                    "folder": folder,
                 }
 
                 with SessionLocal() as db:
-                    if self._already_processed(db, msg_id, uid_str):
-                        stats.skipped_count += 1
-                        emit(
-                            "email_skipped",
-                            "Email già processata (UID %s)" % uid_str,
-                            reason="duplicate",
-                            **log_context,
-                        )
-                        logger.debug(
-                            "Email already processed",
-                            extra={**log_context, "esito": "duplicate"},
-                        )
-                        continue
-
-                    is_allowed, reason = self._allowed_sender(headers)
-                    if not is_allowed:
-                        skip_reason = reason or f"Sender not allowed: {headers.get('From')}"
-                        self._mark_sender_disallowed(
-                            db,
-                            message_id=msg_id or None,
-                            uid_str=uid_str,
-                            from_domain=from_domain,
-                            reason=skip_reason,
-                        )
-                        stats.skipped_count += 1
-                        emit(
-                            "email_skipped",
-                            skip_reason,
-                            reason="not_allowed",
-                            **log_context,
-                        )
-                        continue
-
-                    body = get_text_body(message)
-                    is_lead, score, confidence = self._matches_lead_keywords(
-                        headers,
-                        body,
-                    )
-
-                    if not is_lead:
-                        skip_reason = (
-                            f"Missing lead keywords (score={score:.2f}, conf={confidence})"
-                        )
-                        self._mark_sender_disallowed(
-                            db,
-                            message_id=msg_id or None,
-                            uid_str=uid_str,
-                            from_domain=from_domain,
-                            reason=skip_reason,
-                        )
-                        stats.skipped_count += 1
-                        emit(
-                            "email_skipped",
-                            skip_reason,
-                            reason="not_lead",
-                            score=score,
-                            confidence=confidence,
-                            **log_context,
-                        )
-                        logger.debug(
-                            "Email rejected by lead classifier",
-                            extra={
-                                **log_context,
-                                "esito": "not_lead",
-                                "score": score,
-                                "confidence": confidence,
-                            },
-                        )
-                        continue
-
-                    received_at = self._parse_received_at(headers)
-                    result = process_incoming_email(
-                        db,
-                        headers=headers,
-                        body=body,
-                        imap_uid=uid,
-                        received_at=received_at,
-                    )
-
-                    stats.processed_count += 1
-                    contact_id = result.get("contact_id")
-                    result_context: Dict[str, Any] = {**log_context}
-                    if contact_id is not None:
-                        result_context["contact_id"] = contact_id
-
-                    if result["status"] == "processed":
-                        if result.get("created"):
-                            stats.lead_count += 1
-                            lead_payload = {
-                                "inserted_at": datetime.utcnow(),
-                                "email": result["extracted"].get("email"),
-                                "first_name": result["extracted"].get("first_name"),
-                                "last_name": result["extracted"].get("last_name"),
-                                "company": result["extracted"].get("org"),
-                                "phone": result["extracted"].get("phone"),
-                                "subject": result.get("subject"),
-                                "received_at": result.get("received_at"),
-                                "notes": result.get("body_excerpt"),
-                            }
-                            excel_row = None
-                            if excel_writer:
-                                excel_row = excel_writer.append(lead_payload)
-                            if notifier:
-                                with suppress(Exception):
-                                    payload = {
-                                        **{
-                                            k: v
-                                            for k, v in lead_payload.items()
-                                            if isinstance(v, str)
-                                        }
-                                    }
-                                    received_at_val = lead_payload.get("received_at")
-                                    if isinstance(received_at_val, datetime):
-                                        payload["received_at"] = received_at_val.isoformat()
-                                    elif received_at_val is not None:
-                                        payload["received_at"] = str(received_at_val)
-                                    notifier.send_new_lead(payload)
-                                    if excel_writer and excel_row:
-                                        notifier.send_excel_update(
-                                            payload,
-                                            workbook_path=str(excel_writer.path),
-                                            row_number=excel_row,
-                                        )
-
+                    try:
+                        if self._already_processed(db, msg_id, uid_str):
+                            stats.skipped_count += 1
                             emit(
-                                "lead_created",
-                                "Nuovo lead creato",
-                                contact_id=contact_id,
-                                extracted=result.get("extracted", {}),
+                                "email_skipped",
+                                "Email già processata (UID %s)" % uid_str,
+                                reason="duplicate",
                                 **log_context,
                             )
+                            logger.debug(
+                                "Email already processed",
+                                extra={**log_context, "esito": "duplicate"},
+                            )
+                            continue
 
-                        emit(
-                            "email_processed",
-                            "Email elaborata con successo",
-                            lead_score=score,
-                            confidence=confidence,
-                            **result_context,
+                        is_allowed, reason = self._allowed_sender(headers)
+                        if not is_allowed:
+                            skip_reason = reason or f"Sender not allowed: {headers.get('From')}"
+                            self._mark_sender_disallowed(
+                                db,
+                                message_id=msg_id or None,
+                                uid_str=uid_str,
+                                from_domain=from_domain,
+                                reason=skip_reason,
+                            )
+                            stats.skipped_count += 1
+                            emit(
+                                "email_skipped",
+                                skip_reason,
+                                reason="not_allowed",
+                                **log_context,
+                            )
+                            continue
+
+                        body = get_text_body(message)
+                        is_lead, score, confidence = self._matches_lead_keywords(
+                            headers,
+                            body,
                         )
-                        logger.info(
-                            "Email ingested successfully",
-                            extra={
+
+                        if not is_lead:
+                            skip_reason = (
+                                f"Missing lead keywords (score={score:.2f}, conf={confidence})"
+                            )
+                            self._mark_sender_disallowed(
+                                db,
+                                message_id=msg_id or None,
+                                uid_str=uid_str,
+                                from_domain=from_domain,
+                                reason=skip_reason,
+                            )
+                            stats.skipped_count += 1
+                            emit(
+                                "email_skipped",
+                                skip_reason,
+                                reason="not_lead",
+                                score=score,
+                                confidence=confidence,
+                                **log_context,
+                            )
+                            logger.debug(
+                                "Email rejected by lead classifier",
+                                extra={
+                                    **log_context,
+                                    "esito": "not_lead",
+                                    "score": score,
+                                    "confidence": confidence,
+                                },
+                            )
+                            continue
+
+                        received_at = self._parse_received_at(headers)
+                        result = process_incoming_email(
+                            db,
+                            headers=headers,
+                            body=body,
+                            imap_uid=uid,
+                            received_at=received_at,
+                        )
+
+                        stats.processed_count += 1
+                        record_email_processed(folder=folder, domain=from_domain)
+
+                        contact_id = result.get("contact_id")
+                        result_context: Dict[str, Any] = {**log_context}
+                        if contact_id is not None:
+                            result_context["contact_id"] = contact_id
+
+                        if result["status"] == "processed":
+                            if result.get("created"):
+                                stats.lead_count += 1
+                                record_lead_created(folder=folder, domain=from_domain)
+                                lead_payload = {
+                                    "inserted_at": datetime.utcnow(),
+                                    "email": result["extracted"].get("email"),
+                                    "first_name": result["extracted"].get("first_name"),
+                                    "last_name": result["extracted"].get("last_name"),
+                                    "company": result["extracted"].get("org"),
+                                    "phone": result["extracted"].get("phone"),
+                                    "subject": result.get("subject"),
+                                    "received_at": result.get("received_at"),
+                                    "notes": result.get("body_excerpt"),
+                                }
+                                excel_row = None
+                                if excel_writer:
+                                    excel_row = excel_writer.append(lead_payload)
+                                if notifier:
+                                    with suppress(Exception):
+                                        payload = {
+                                            **{
+                                                k: v
+                                                for k, v in lead_payload.items()
+                                                if isinstance(v, str)
+                                            }
+                                        }
+                                        received_at_val = lead_payload.get("received_at")
+                                        if isinstance(received_at_val, datetime):
+                                            payload["received_at"] = received_at_val.isoformat()
+                                        elif received_at_val is not None:
+                                            payload["received_at"] = str(received_at_val)
+                                        notifier.send_new_lead(payload)
+                                        if excel_writer and excel_row:
+                                            notifier.send_excel_update(
+                                                payload,
+                                                workbook_path=str(excel_writer.path),
+                                                row_number=excel_row,
+                                            )
+
+                                emit(
+                                    "lead_created",
+                                    "Nuovo lead creato",
+                                    contact_id=contact_id,
+                                    extracted=result.get("extracted", {}),
+                                    **log_context,
+                                )
+
+                            emit(
+                                "email_processed",
+                                "Email elaborata con successo",
+                                lead_score=score,
+                                confidence=confidence,
                                 **result_context,
-                                "esito": "ingested",
-                                "is_new": result.get("created", False),
-                                "lead_score": score,
-                                "confidence": confidence,
-                            },
-                        )
-                    else:
-                        stats.skipped_count += 1
-                        reason = result.get("reason", "unknown")
-                        emit(
-                            "email_skipped",
-                            f"Email saltata: {reason}",
-                            reason=reason,
-                            **result_context,
-                        )
-                        logger.info(
-                            "Email skipped by ingestion",
-                            extra={
+                            )
+                            logger.info(
+                                "Email ingested successfully",
+                                extra={
+                                    **result_context,
+                                    "esito": "ingested",
+                                    "is_new": result.get("created", False),
+                                    "lead_score": score,
+                                    "confidence": confidence,
+                                },
+                            )
+                        else:
+                            stats.skipped_count += 1
+                            reason = result.get("reason", "unknown")
+                            emit(
+                                "email_skipped",
+                                f"Email saltata: {reason}",
+                                reason=reason,
                                 **result_context,
-                                "esito": "skipped",
-                                "reason": reason,
-                            },
-                        )
+                            )
+                            logger.info(
+                                "Email skipped by ingestion",
+                                extra={
+                                    **result_context,
+                                    "esito": "skipped",
+                                    "reason": reason,
+                                },
+                            )
+                    except Exception:
+                        record_ingestion_error(folder=folder, domain=from_domain)
+                        raise
 
                 emit(
                     "run_progress",
@@ -289,10 +308,11 @@ class IngestionRunner:
                 )
 
         except Exception as exc:  # pragma: no cover - defensive
+            record_ingestion_error(folder=folder, domain="run")
             logger.error(
                 "Ingestion failed with exception",
                 exc_info=True,
-                extra={"esito": "error"},
+                extra={"esito": "error", "folder": folder},
             )
             emit(
                 "run_failed",
