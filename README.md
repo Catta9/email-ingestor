@@ -77,6 +77,9 @@ IMAP_FOLDER=INBOX
 IMAP_SEARCH_SINCE_DAYS=3
 ```
 > Gmail richiede **App Password** con 2FA attiva.
+- Il valore deve essere un **intero ≥ 1**. In caso di valore mancante o non valido,
+  l'ingestor torna automaticamente al default di 7 giorni e scrive un log di
+  avviso.
 
 ### Filtri mittente / keyword (pre-filtro)
 ```env

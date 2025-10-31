@@ -40,6 +40,8 @@ LOG_FORMAT=json
 EOF
 ```
 
+> ℹ️ Ricorda che `IMAP_SEARCH_SINCE_DAYS` deve essere un intero ≥ 1: valori non validi vengono ignorati e il sistema torna automaticamente al default di 7 giorni, emettendo un log di avviso.
+
 ### 3. Retrain Modello (IMPORTANTE)
 
 ```bash

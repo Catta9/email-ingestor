@@ -66,7 +66,7 @@ class IngestionRunner:
 
         init_db()
         folder = os.getenv("IMAP_FOLDER", "INBOX")
-        since_days = int(os.getenv("IMAP_SEARCH_SINCE_DAYS", "7"))
+        since_days = self._parse_since_days(os.getenv("IMAP_SEARCH_SINCE_DAYS"), default=7)
 
         excel_writer = ExcelLeadWriter.from_env()
         notifier = EmailNotifier.from_env()
@@ -404,6 +404,37 @@ class IngestionRunner:
     # ------------------------------------------------------------------
     # Scoring helpers
     # ------------------------------------------------------------------
+    @staticmethod
+    def _parse_since_days(raw_value: str | None, *, default: int = 7) -> int:
+        """Validate the IMAP look-back window expressed in days."""
+
+        if raw_value is None:
+            return default
+
+        value_str = raw_value.strip()
+        if not value_str:
+            return default
+
+        try:
+            value = int(value_str)
+        except ValueError:
+            logger.warning(
+                "Invalid IMAP_SEARCH_SINCE_DAYS=%r. Falling back to %d days.",
+                raw_value,
+                default,
+            )
+            return default
+
+        if value < 1:
+            logger.warning(
+                "IMAP_SEARCH_SINCE_DAYS must be >= 1. Falling back to %d days (got %r).",
+                default,
+                raw_value,
+            )
+            return default
+
+        return value
+
     def _get_rule_based_scorer(self) -> LeadRelevanceScorer:
         if self._rule_based_scorer is None:
             self._rule_based_scorer = LeadRelevanceScorer.from_env()
