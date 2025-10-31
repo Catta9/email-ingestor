@@ -47,7 +47,12 @@ class EnsembleLeadClassifier:
         self.rule_scorer = LeadRelevanceScorer.from_env()
         
         try:
-            self.ml_classifier = LeadMLClassifier.from_env()
+            candidate = LeadMLClassifier.from_env()
+            if not candidate.config.model_path.exists():
+                raise ModelNotAvailableError(
+                    f"Model not found at {candidate.config.model_path}"
+                )
+            self.ml_classifier = candidate
             self.ml_available = True
         except (ModelNotAvailableError, FileNotFoundError) as exc:
             logger.warning("ML classifier unavailable, using rule-based only: %s", exc)
