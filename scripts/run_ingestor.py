@@ -8,6 +8,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from libs.metrics import metrics_snapshot
 from libs.models import ProcessedMessage
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
 
@@ -62,6 +63,7 @@ _RUNNER = IngestionRunner()
 _RULE_BASED_SCORER = None
 _ML_CLASSIFIER = None
 _ML_AVAILABLE = True
+_CURRENT_FOLDER: str | None = None
 
 
 def _sync_runner_cache_from_globals() -> None:
@@ -117,14 +119,31 @@ def log_event_to_logger(event: IngestionEvent) -> None:
     message = event.get("message", "")
     data: dict[str, Any] = event.get("data", {}) or {}
 
+    global _CURRENT_FOLDER
+    folder = data.get("folder")
+    if folder:
+        _CURRENT_FOLDER = folder
+
     if event_type == "run_failed":
         logger.error(message, extra={**data, "esito": "error"})
+        snapshot = metrics_snapshot(folder=_CURRENT_FOLDER)
+        logger.error(
+            "Metriche di ingestione aggiornate",
+            extra={"metrics": snapshot, "esito": "metrics", "folder": _CURRENT_FOLDER},
+        )
+        _CURRENT_FOLDER = None
     elif event_type == "lead_created":
         logger.info(message, extra={**data, "esito": "lead_created"})
     elif event_type == "email_skipped":
         logger.info(message, extra={**data, "esito": "skipped"})
     elif event_type == "run_completed":
         logger.info(message, extra={**data, "esito": "summary"})
+        snapshot = metrics_snapshot(folder=_CURRENT_FOLDER)
+        logger.info(
+            "Metriche di ingestione aggiornate",
+            extra={"metrics": snapshot, "esito": "metrics", "folder": _CURRENT_FOLDER},
+        )
+        _CURRENT_FOLDER = None
     else:
         logger.info(message, extra=data)
 

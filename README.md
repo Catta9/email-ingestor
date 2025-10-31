@@ -166,13 +166,51 @@ python -m scripts.scheduler
 ## Export & API
 - **Excel**: file creato/aggiornato in `EXCEL_PATH` (default `./data/leads.xlsx`)  
 - **API FastAPI** (se abilitate nel progetto):
-  - `GET /health` → stato servizio  
-  - `GET /contacts?limit&offset` → lista contatti (DB)  
-  - `GET /export/xlsx` → scarica export Excel corrente  
+  - `GET /health` → stato servizio
+  - `GET /contacts?limit&offset` → lista contatti (DB)
+  - `GET /export/xlsx` → scarica export Excel corrente
+  - `GET /metrics` → esporta metriche Prometheus
 
 **Avvio API:**
 ```bash
 uvicorn app.main:app --reload
+```
+
+### Osservabilità & Prometheus
+
+L'applicazione espone metriche in formato **Prometheus** all'endpoint `GET /metrics`.
+I contatori principali sono:
+
+- `email_ingestor_processed_total{folder="INBOX",domain="example.com"}` – email elaborate
+- `email_ingestor_leads_total{folder="INBOX",domain="example.com"}` – lead creati
+- `email_ingestor_errors_total{folder="INBOX",domain="example.com"}` – errori di ingestione
+- `email_ingestor_run_discovered_messages{folder="INBOX"}` – email individuate nell'ultima scansione
+
+Esempio di scrape config (`prometheus.yml`):
+
+```yaml
+scrape_configs:
+  - job_name: email-ingestor
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - email-ingestor.local:8000
+```
+
+Alert di base per errori consecutivi (10 minuti):
+
+```yaml
+groups:
+  - name: email-ingestor
+    rules:
+      - alert: EmailIngestorHighErrorRate
+        expr: increase(email_ingestor_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Errori di ingestione rilevati"
+          description: "email_ingestor_errors_total ha registrato nuovi errori negli ultimi 10 minuti."
 ```
 
 ---
