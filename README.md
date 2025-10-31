@@ -102,7 +102,11 @@ NOTIFY_RECIPIENTS=me@azienda.it, collega@azienda.it
 DATABASE_URL=sqlite:///./data/app.db
 EXCEL_PATH=./data/leads.xlsx
 EXCEL_HEADERS=name,email,phone,company,date
+LEADS_XLSX_PATH=./data/leads.xlsx  # fallback per compatibilità
 ```
+
+- `EXCEL_PATH` ha priorità rispetto a `LEADS_XLSX_PATH`; quest'ultimo resta per retro-compatibilità.
+- `EXCEL_HEADERS` accetta una lista separata da virgole che definisce l'ordine delle colonne generate.
 
 ### Lead Scoring (Rule-based, ML, Hybrid)
 ```env
