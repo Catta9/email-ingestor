@@ -6,7 +6,9 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from libs.models import Contact
+from libs.models import Contact, ContactTag
+
+API_HEADERS = {"X-API-Key": "test-key"}
 
 
 def test_contacts_endpoint_returns_data(client, session_factory):
@@ -22,7 +24,7 @@ def test_contacts_endpoint_returns_data(client, session_factory):
         session.add(contact)
         session.commit()
 
-        response = client.get("/contacts")
+        response = client.get("/contacts", headers=API_HEADERS)
         assert response.status_code == 200
         payload = response.json()
         assert isinstance(payload, list)
@@ -32,6 +34,9 @@ def test_contacts_endpoint_returns_data(client, session_factory):
         assert item["first_name"] == "Jane"
         assert item["last_name"] == "Doe"
         assert item["org"] == "Example Inc"
+        assert item["status"] == "new"
+        assert item["notes"] is None
+        assert item["tags"] == []
         # created_at should be a valid ISO formatted datetime
         datetime.fromisoformat(item["created_at"])
         assert "last_message_subject" in item
@@ -54,7 +59,7 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
         session.add(contact)
         session.commit()
 
-        response = client.get("/export/xlsx")
+        response = client.get("/export/xlsx", headers=API_HEADERS)
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         assert response.headers["content-disposition"].startswith("attachment; filename=\"contacts_export.xlsx\"")
@@ -71,6 +76,9 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
             "org",
             "source",
             "created_at",
+            "status",
+            "tags",
+            "notes",
             "last_message_subject",
             "last_message_received_at",
             "last_message_excerpt",
@@ -81,5 +89,97 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
         assert data_row[3] == "Smith"
         assert data_row[4] == "555123456"
         assert data_row[5] == "Smith LLC"
+        assert data_row[8] == "new"
+        assert data_row[9] is None
+    finally:
+        session.close()
+
+
+def test_contacts_endpoint_requires_api_key(client, session_factory):
+    response = client.get("/contacts")
+    assert response.status_code == 401
+
+
+def test_update_contact_status_and_notes(client, session_factory):
+    session = session_factory()
+    try:
+        contact = Contact(email="lead@example.com", first_name="Lead")
+        session.add(contact)
+        session.commit()
+
+        response = client.patch(
+            f"/contacts/{contact.id}",
+            headers=API_HEADERS,
+            json={"status": "reviewed", "notes": "Chiamato il cliente"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["status"] == "reviewed"
+        assert payload["notes"] == "Chiamato il cliente"
+
+        session.refresh(contact)
+        assert contact.status == "reviewed"
+        assert contact.notes == "Chiamato il cliente"
+    finally:
+        session.close()
+
+
+def test_update_contact_without_api_key_is_rejected(client, session_factory):
+    session = session_factory()
+    try:
+        contact = Contact(email="lead@example.com")
+        session.add(contact)
+        session.commit()
+
+        response = client.patch(
+            f"/contacts/{contact.id}",
+            json={"status": "reviewed"},
+        )
+        assert response.status_code == 401
+    finally:
+        session.close()
+
+
+def test_add_tag_to_contact(client, session_factory):
+    session = session_factory()
+    try:
+        contact = Contact(email="tag@example.com")
+        session.add(contact)
+        session.commit()
+
+        response = client.post(
+            f"/contacts/{contact.id}/tags",
+            headers=API_HEADERS,
+            json={"tag": "priorità"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert "priorità" in payload["tags"]
+
+        session.refresh(contact)
+        assert any(tag.tag == "priorità" for tag in contact.tags)
+    finally:
+        session.close()
+
+
+def test_add_tag_avoids_duplicates(client, session_factory):
+    session = session_factory()
+    try:
+        contact = Contact(email="dup@example.com")
+        contact.tags.append(ContactTag(tag="caldo"))
+        session.add(contact)
+        session.commit()
+
+        response = client.post(
+            f"/contacts/{contact.id}/tags",
+            headers=API_HEADERS,
+            json={"tag": "Caldo"},
+        )
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["tags"] == ["caldo"]
+
+        session.refresh(contact)
+        assert [tag.tag for tag in contact.tags] == ["caldo"]
     finally:
         session.close()

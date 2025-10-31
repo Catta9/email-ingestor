@@ -34,5 +34,5 @@ Base = declarative_base()
 
 ## Importa i modelli (così SQLAlchemy li “conosce”) e crea le tabelle se non esistono.
 def init_db():
-    from .models import Contact, ContactEvent, ProcessedMessage  # noqa
+    from .models import Contact, ContactEvent, ContactTag, ProcessedMessage  # noqa
     Base.metadata.create_all(bind=engine)

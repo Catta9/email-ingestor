@@ -164,15 +164,54 @@ python -m scripts.scheduler
 ---
 
 ## Export & API
-- **Excel**: file creato/aggiornato in `EXCEL_PATH` (default `./data/leads.xlsx`)  
-- **API FastAPI** (se abilitate nel progetto):
-  - `GET /health` → stato servizio  
-  - `GET /contacts?limit&offset` → lista contatti (DB)  
-  - `GET /export/xlsx` → scarica export Excel corrente  
+- **Excel**: file creato/aggiornato in `EXCEL_PATH` (default `./data/leads.xlsx`)
+- **API FastAPI**:
+  - `GET /health` → stato servizio
+  - `GET /contacts?limit&offset` → lista contatti (DB)
+  - `GET /export/xlsx` → scarica export Excel corrente
+  - `POST /ingestion/run` → avvia ingestione IMAP manuale
+  - `PATCH /contacts/{id}` → aggiorna stato (`new`/`reviewed`) e note operative
+  - `POST /contacts/{id}/tags` → aggiunge un tag libero al lead (idempotente sul valore)
+
+### Autenticazione API
+Le rotte elencate sopra (eccetto `GET /health`) richiedono un header `X-API-Key`.
+
+- Valore di default in sviluppo: `local-dev-key`
+- Sovrascrivibile impostando `INGESTOR_API_KEY` (o `API_KEY`) nell'ambiente / `.env`
+- La dashboard web salva la chiave nel browser (LocalStorage) e la riutilizza per tutte le chiamate
+
+Se la chiave è errata, la UI mostra l'errore e blocca le azioni fino all'aggiornamento.
+
+### Dashboard web
+L'interfaccia `FastAPI` espone `/` con una SPA vanilla JS potenziata:
+
+- tabella lead con stato modificabile (`Nuovo` / `In revisione`), note testuali e tag
+- form rapido per aggiungere tag (evita duplicati in modo case-insensitive)
+- textarea con salvataggio note e log in tempo reale delle operazioni
+- card "API key" per memorizzare la chiave e collegarsi agli SSE (`/ingestion/stream`)
+
+Esempio di schermata con lead aggiornati:
+
+![Dashboard lead con stato, note e tag](artifacts/dashboard-leads.png)
 
 **Avvio API:**
 ```bash
 uvicorn app.main:app --reload
+```
+
+## Migrazioni database
+Il nuovo schema introduce i campi `status`, `notes` e la tabella relazionale `contact_tags`.
+
+Esegui le migrazioni Alembic incluse nel repository:
+
+```bash
+alembic upgrade head
+```
+
+Per un reset o downgrade:
+
+```bash
+alembic downgrade -1
 ```
 
 ---

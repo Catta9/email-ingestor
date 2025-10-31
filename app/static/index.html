@@ -16,8 +16,26 @@
           </p>
         </div>
         <div class="hero-controls">
-          <button id="start-btn" class="primary">Avvia tool</button>
-          <span id="status-badge" class="status status-idle" data-state="idle">In attesa</span>
+          <div class="api-key-card">
+            <form id="api-key-form" class="api-key-form">
+              <label for="api-key-input">API key</label>
+              <div class="api-key-inputs">
+                <input
+                  id="api-key-input"
+                  type="password"
+                  placeholder="local-dev-key"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button class="ghost" type="submit">Salva</button>
+              </div>
+              <p class="hint">La chiave viene salvata solo nel browser.</p>
+            </form>
+          </div>
+          <div class="hero-actions">
+            <button id="start-btn" class="primary">Avvia tool</button>
+            <span id="status-badge" class="status status-idle" data-state="idle">In attesa</span>
+          </div>
         </div>
       </header>
 
@@ -37,7 +55,10 @@
 
       <section class="panel" aria-labelledby="contacts-title">
         <div class="panel-header">
-          <h2 id="contacts-title">Clienti e richieste</h2>
+          <div>
+            <h2 id="contacts-title">Clienti e richieste</h2>
+            <p id="contacts-meta" class="panel-subtitle muted"></p>
+          </div>
           <button id="refresh-btn" class="ghost" type="button">Aggiorna</button>
         </div>
         <div class="table-wrapper">
@@ -48,6 +69,9 @@
                 <th>Email</th>
                 <th>Azienda</th>
                 <th>Telefono</th>
+                <th>Stato</th>
+                <th>Tag</th>
+                <th>Note</th>
                 <th>Ultimo messaggio</th>
               </tr>
             </thead>
