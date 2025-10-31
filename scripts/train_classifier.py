@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import joblib
-import numpy as np
 
 
 try:
@@ -22,9 +21,13 @@ try:
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
     from sklearn.pipeline import Pipeline
-except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for CI environment
     TfidfVectorizer = LogisticRegression = Pipeline = None  # type: ignore
-    precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore
+    from libs.simple_metrics import (  # type: ignore
+        precision_recall_curve,
+        roc_auc_score,
+        roc_curve,
+    )
 
 
 logger = logging.getLogger(__name__)
@@ -345,11 +348,147 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     return model
 
 
-def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int) -> Pipeline:
+@dataclass
+class _SimpleLogisticPipeline:
+    vocabulary: dict[str, int]
+    extra_features: list[str]
+    weights: list[float]
+    bias: float
+    use_ngrams: bool
+    use_features: bool
+
+    def _vectorize(self, text: str) -> list[float]:
+        features = [0.0] * len(self.weights)
+        tokens = _tokenize(text)
+
+        vocab_size = len(self.vocabulary)
+        if vocab_size:
+            for token in tokens:
+                idx = self.vocabulary.get(token)
+                if idx is not None:
+                    features[idx] += 1.0
+            if self.use_ngrams:
+                for bigram in _extract_ngrams(tokens, n=2):
+                    idx = self.vocabulary.get(bigram)
+                    if idx is not None:
+                        features[idx] += 1.0
+            norm = math.sqrt(sum(value * value for value in features[:vocab_size]))
+            if norm:
+                for i in range(vocab_size):
+                    features[i] /= norm
+
+        if self.use_features and self.extra_features:
+            numeric = _extract_features(text)
+            base = vocab_size
+            for offset, name in enumerate(self.extra_features):
+                features[base + offset] = float(numeric.get(name, 0.0))
+
+        return features
+
+    def predict_proba(self, texts: Sequence[str]) -> list[list[float]]:  # type: ignore[override]
+        results: list[list[float]] = []
+        for text in texts:
+            vector = self._vectorize(text)
+            score = sum(w * x for w, x in zip(self.weights, vector)) + self.bias
+            score = max(-50.0, min(50.0, score))
+            prob = 1.0 / (1.0 + math.exp(-score))
+            results.append([1.0 - prob, prob])
+        return results
+
+
+def _train_simple_logistic(train_set: list[dict[str, str]], config: TrainingConfig) -> _SimpleLogisticPipeline:
+    texts = [_prepare_text(record) for record in train_set]
+    labels = [float(int(record.get("label", 0))) for record in train_set]
+
+    token_sequences: list[list[str]] = []
+    vocabulary: dict[str, int] = {}
+    for text in texts:
+        tokens = _tokenize(text)
+        augmented = list(tokens)
+        if config.use_ngrams:
+            augmented.extend(_extract_ngrams(tokens, n=2))
+        token_sequences.append(augmented)
+        for token in augmented:
+            if token not in vocabulary:
+                vocabulary[token] = len(vocabulary)
+
+    extra_features: list[str] = []
+    if config.use_features:
+        seen = set()
+        for text in texts:
+            for name in _extract_features(text).keys():
+                if name not in seen:
+                    seen.add(name)
+                    extra_features.append(name)
+
+    vocab_size = len(vocabulary)
+    extra_size = len(extra_features) if config.use_features else 0
+    num_features = vocab_size + extra_size
+    if num_features == 0:
+        vocabulary = {}
+        extra_features = []
+        num_features = 1
+
+    matrix: list[list[float]] = []
+    for text, tokens in zip(texts, token_sequences):
+        row = [0.0] * num_features
+        for token in tokens:
+            idx = vocabulary.get(token)
+            if idx is not None:
+                row[idx] += 1.0
+        if vocab_size:
+            norm = math.sqrt(sum(value * value for value in row[:vocab_size]))
+            if norm:
+                for i in range(vocab_size):
+                    row[i] /= norm
+        if config.use_features and extra_features:
+            numeric = _extract_features(text)
+            for offset, name in enumerate(extra_features):
+                row[vocab_size + offset] = float(numeric.get(name, 0.0))
+        matrix.append(row)
+
+    weights = [0.0] * num_features
+    bias = 0.0
+    rng = random.Random(config.random_state)
+    indices = list(range(len(texts)))
+
+    if not indices:
+        return _SimpleLogisticPipeline(vocabulary, extra_features, weights, bias, config.use_ngrams, config.use_features)
+
+    for epoch in range(400):
+        rng.shuffle(indices)
+        grad_w = [0.0] * num_features
+        grad_b = 0.0
+        for idx in indices:
+            row = matrix[idx]
+            score = sum(w * x for w, x in zip(weights, row)) + bias
+            score = max(-50.0, min(50.0, score))
+            pred = 1.0 / (1.0 + math.exp(-score))
+            error = pred - labels[idx]
+            grad_b += error
+            for j, value in enumerate(row):
+                grad_w[j] += error * value
+        scale = 1.0 / len(indices)
+        learning_rate = 0.5 / (1.0 + epoch * 0.05)
+        for j in range(num_features):
+            grad = grad_w[j] * scale + 0.01 * weights[j]
+            weights[j] -= learning_rate * grad
+        bias -= learning_rate * grad_b * scale
+
+    return _SimpleLogisticPipeline(
+        vocabulary=vocabulary,
+        extra_features=extra_features,
+        weights=weights,
+        bias=bias,
+        use_ngrams=config.use_ngrams,
+        use_features=config.use_features,
+    )
+
+
+def _train_logistic_regression(train_set: list[dict[str, str]], config: TrainingConfig):
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
-        raise RuntimeError(
-            "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
-        )
+        logger.info("scikit-learn not available, using simplified logistic regression")
+        return _train_simple_logistic(train_set, config)
 
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
@@ -370,7 +509,7 @@ def _train_logistic_regression(train_set: list[dict[str, str]], random_state: in
                 LogisticRegression(
                     max_iter=1000,
                     class_weight="balanced",
-                    random_state=random_state,
+                    random_state=config.random_state,
                 ),
             ),
         ]
@@ -434,29 +573,24 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
 def _compute_metrics_from_scores(
     y_true: Sequence[int], y_scores: Sequence[float], threshold: float = 0.5
 ) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
-    if precision_recall_curve is None or roc_curve is None or roc_auc_score is None:
-        raise RuntimeError(
-            "scikit-learn is required to compute evaluation metrics. Install scikit-learn first."
-        )
+    y_true_list = [int(v) for v in y_true]
+    y_scores_list = [float(v) for v in y_scores]
+    y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
 
-    y_true_array = np.asarray(y_true)
-    y_scores_array = np.asarray(y_scores)
-    y_pred = (y_scores_array >= threshold).astype(int)
+    tp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 1)
+    fp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 0)
+    tn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 0)
+    fn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 1)
 
-    tp = int(((y_pred == 1) & (y_true_array == 1)).sum())
-    fp = int(((y_pred == 1) & (y_true_array == 0)).sum())
-    tn = int(((y_pred == 0) & (y_true_array == 0)).sum())
-    fn = int(((y_pred == 0) & (y_true_array == 1)).sum())
-
-    total = len(y_true_array)
+    total = len(y_true_list)
     accuracy = (tp + tn) / total if total else 0.0
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
 
-    fpr, tpr, roc_thresholds = roc_curve(y_true_array, y_scores_array)
-    roc_auc = roc_auc_score(y_true_array, y_scores_array)
-    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_array, y_scores_array)
+    fpr, tpr, roc_thresholds = roc_curve(y_true_list, y_scores_list)
+    roc_auc = roc_auc_score(y_true_list, y_scores_list)
+    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_list, y_scores_list)
 
     metrics = {
         "accuracy": accuracy,
@@ -470,14 +604,14 @@ def _compute_metrics_from_scores(
         "roc_auc": roc_auc,
     }
     roc_data = {
-        "fpr": fpr.tolist(),
-        "tpr": tpr.tolist(),
-        "thresholds": roc_thresholds.tolist(),
+        "fpr": list(fpr),
+        "tpr": list(tpr),
+        "thresholds": list(roc_thresholds),
     }
     pr_data = {
-        "precision": pr_precision.tolist(),
-        "recall": pr_recall.tolist(),
-        "thresholds": pr_thresholds.tolist(),
+        "precision": list(pr_precision),
+        "recall": list(pr_recall),
+        "thresholds": list(pr_thresholds),
     }
     return metrics, roc_data, pr_data
 
@@ -572,20 +706,26 @@ def train(config: TrainingConfig) -> None:
     logger.info("Selected training algorithm: %s", config.algorithm)
 
     if config.algorithm == "logreg":
-        pipeline = _train_logistic_regression(train_set, config.random_state)
+        pipeline = _train_logistic_regression(train_set, config)
         model_output_path = config.output_path
         joblib.dump(pipeline, model_output_path)
         logger.info("Persisted TF-IDF + Logistic Regression pipeline to %s", model_output_path)
 
         texts_test = [_prepare_text(record) for record in test_set]
         y_true = [int(record.get("label", 0)) for record in test_set]
-        y_scores = pipeline.predict_proba(texts_test)[:, 1].tolist()
+        proba_matrix = pipeline.predict_proba(texts_test)
+        y_scores = [row[1] for row in proba_matrix]
 
         metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores)
         logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
 
+        if Pipeline is None or not isinstance(pipeline, Pipeline):
+            algorithm_label = "simple_logreg"
+        else:
+            algorithm_label = "tfidf_logreg"
+
         metadata = {
-            "algorithm": "tfidf_logreg",
+            "algorithm": algorithm_label,
             "version": 1,
             "trained_at": datetime.utcnow().isoformat() + "Z",
             "threshold": 0.5,

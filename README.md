@@ -61,6 +61,13 @@ pip install -r requirements.txt
 ```
 
 > `requirements.txt` include **beautifulsoup4** per il parsing HTML.
+>
+> **Suggerimento:** in ambienti limitati puoi eseguire i test senza installare
+> librerie pesanti come `numpy`, `scikit-learn`, `joblib` o
+> `prometheus_client`. Il progetto fornisce fallback puramente Python che
+> vengono caricati automaticamente in assenza delle dipendenze opzionali.
+> Se invece installi le librerie ufficiali avrai performance migliori in
+> produzione.
 
 ---
 
