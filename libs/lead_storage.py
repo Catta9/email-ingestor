@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import os
 from collections import Counter
+from collections.abc import Mapping as MappingABC
+from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
@@ -48,6 +50,56 @@ def _coerce_datetime(value: object) -> object:
 def _header_index(headers: Sequence[str], target: str) -> Optional[int]:
     lookup = {name.lower(): idx for idx, name in enumerate(headers, start=1)}
     return lookup.get(target.lower())
+
+
+def _prepare_headers(headers: Iterable[object]) -> list[str]:
+    header_list = [str(header).strip() for header in headers if str(header).strip()]
+    return header_list or list(DEFAULT_HEADERS)
+
+
+def _extract_headers(ws) -> list[str]:
+    if ws.max_row < 1:
+        return []
+    header_values = []
+    for cell in ws[1]:
+        if cell.value is None:
+            continue
+        header_values.append(str(cell.value).strip())
+    return [value for value in header_values if value]
+
+
+def _coerce_header_value(header: str, value: object) -> object:
+    if header.lower() in {"inserted_at", "received_at"}:
+        return _coerce_datetime(value)
+    return value
+
+
+def _row_from_mapping(headers: Sequence[str], row: MappingABC[str, object]) -> list[object]:
+    normalized = {str(key).lower(): value for key, value in row.items()}
+    return [
+        _coerce_header_value(header, normalized.get(header.lower()))
+        for header in headers
+    ]
+
+
+def _row_from_sequence(headers: Sequence[str], row: SequenceABC) -> list[object]:
+    sequence = list(row)
+    values: list[object] = []
+    for index, header in enumerate(headers):
+        value = sequence[index] if index < len(sequence) else None
+        values.append(_coerce_header_value(header, value))
+    return values
+
+
+def _row_from_any(headers: Sequence[str], row: object) -> list[object]:
+    if isinstance(row, MappingABC):
+        return _row_from_mapping(headers, row)
+    if isinstance(row, SequenceABC) and not isinstance(row, (str, bytes, bytearray)):
+        return _row_from_sequence(headers, row)
+    return [
+        _coerce_header_value(header, getattr(row, header, None))
+        for header in headers
+    ]
 
 
 def _apply_header_style(ws, header_count: int) -> None:
@@ -194,7 +246,7 @@ def _finalize_data_sheet(ws, header_count: int, table_name: str) -> None:
 
 def build_structured_workbook(
     headers: Sequence[str],
-    rows: Iterable[Sequence[object]],
+    rows: Iterable[Sequence[object] | Mapping[str, object]],
     *,
     data_sheet_name: str = DATA_SHEET_TITLE,
     summary_sheet_name: str = SUMMARY_SHEET_TITLE,
@@ -203,10 +255,10 @@ def build_structured_workbook(
     wb = Workbook()
     data_ws = wb.active
     data_ws.title = data_sheet_name
-    header_list = list(headers)
+    header_list = _prepare_headers(headers)
     data_ws.append(header_list)
     for row in rows:
-        data_ws.append(list(row))
+        data_ws.append(_row_from_any(header_list, row))
 
     _finalize_data_sheet(data_ws, len(header_list), table_name)
     _update_summary_sheet(
@@ -227,34 +279,40 @@ class ExcelLeadWriter:
 
     @classmethod
     def from_env(cls) -> "ExcelLeadWriter | None":
-        target = os.getenv("LEADS_XLSX_PATH", "data/leads.xlsx").strip()
+        primary = (os.getenv("EXCEL_PATH") or "").strip()
+        fallback_env = (os.getenv("LEADS_XLSX_PATH") or "").strip()
+        fallback = fallback_env or "data/leads.xlsx"
+        target = primary or fallback
         if not target:
             return None
-        return cls(Path(target))
+        headers_env = os.getenv("EXCEL_HEADERS")
+        if headers_env:
+            headers = _prepare_headers(headers_env.split(","))
+        else:
+            headers = list(DEFAULT_HEADERS)
+        return cls(Path(target), headers=tuple(headers))
 
     def append(self, lead: dict[str, Optional[str | datetime]]) -> int:
-        headers = list(self.headers)
+        desired_headers = _prepare_headers(self.headers)
         _ensure_parent(self.path)
         if self.path.exists():
             wb = load_workbook(self.path)
             data_ws = wb[DATA_SHEET_TITLE] if DATA_SHEET_TITLE in wb.sheetnames else wb.active
+            existing_headers = _extract_headers(data_ws)
+            headers = existing_headers or desired_headers
+            if not existing_headers:
+                first_row = list(data_ws[1]) if data_ws.max_row else []
+                if first_row and all(cell.value is None for cell in first_row):
+                    data_ws.delete_rows(1, 1)
+                data_ws.append(headers)
         else:
             wb = Workbook()
             data_ws = wb.active
             data_ws.title = DATA_SHEET_TITLE
+            headers = desired_headers
             data_ws.append(headers)
 
-        row = [
-            _coerce_datetime(lead.get("inserted_at")),
-            lead.get("email"),
-            lead.get("first_name"),
-            lead.get("last_name"),
-            lead.get("company"),
-            lead.get("phone"),
-            lead.get("subject"),
-            _coerce_datetime(lead.get("received_at")),
-            lead.get("notes"),
-        ]
+        row = _row_from_any(headers, lead)
 
         data_ws.append(row)
         _finalize_data_sheet(data_ws, len(headers), DEFAULT_TABLE_NAME)
