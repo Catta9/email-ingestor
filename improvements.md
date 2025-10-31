@@ -11,6 +11,7 @@ Questo documento descrive i miglioramenti urgenti implementati per aumentare l'a
 | Parser | Context-aware + scoring telefonico | ⭐⭐⭐⭐ | `libs/parser.py` |
 | Classifier | Ensemble rule+ML intelligente | ⭐⭐⭐⭐⭐ | `libs/ensemble_classifier.py` (NUOVO) |
 | Logging | Structured JSON logging | ⭐⭐⭐ | `scripts/run_ingestor.py` |
+| Config IMAP | Validazione `IMAP_SEARCH_SINCE_DAYS` con fallback sicuro | ⭐⭐ | `libs/services/ingestion_runner.py` |
 | Testing | Test per nuove feature | ⭐⭐⭐ | `tests/test_improvements.py` (NUOVO) |
 
 ---
@@ -253,6 +254,30 @@ LOG_FORMAT=json  # o "text" per human-readable
 ```
 
 **Beneficio**: Facile integrazione con ELK Stack, Splunk, CloudWatch, Datadog.
+
+---
+
+## 6️⃣ Hardening Configurazione IMAP
+
+### ✅ Validazione `IMAP_SEARCH_SINCE_DAYS`
+
+Per evitare crash quando la variabile d'ambiente contiene valori errati, il
+runner ora valida e normalizza l'intervallo di ricerca IMAP:
+
+```text
+- Valori mancanti o vuoti → fallback automatico a 7 giorni
+- Valori non numerici → fallback a 7 giorni con log di warning
+- Valori < 1 → forzati a 7 giorni con warning esplicito
+```
+
+**Beneficio**: l'esecuzione schedulata non si interrompe per errori di
+configurazione e i log guidano il troubleshooting.
+
+Esempio di log:
+
+```text
+[WARNING] Invalid IMAP_SEARCH_SINCE_DAYS='abc'. Falling back to 7 days.
+```
 
 ---
 

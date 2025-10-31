@@ -28,6 +28,26 @@ def test_allowed_sender_handles_invalid_addresses(monkeypatch):
     assert "Invalid sender address" in reason
 
 
+def test_parse_since_days_handles_invalid_value(caplog):
+    with caplog.at_level(logging.WARNING, logger="libs.services.ingestion_runner"):
+        value = run_ingestor.IngestionRunner._parse_since_days("abc", default=7)
+
+    assert value == 7
+    assert any("Invalid IMAP_SEARCH_SINCE_DAYS" in record.message for record in caplog.records)
+
+
+def test_parse_since_days_enforces_minimum(caplog):
+    with caplog.at_level(logging.WARNING, logger="libs.services.ingestion_runner"):
+        value = run_ingestor.IngestionRunner._parse_since_days("0", default=7)
+
+    assert value == 7
+    assert any("must be >= 1" in record.message for record in caplog.records)
+
+
+def test_parse_since_days_accepts_valid_value():
+    assert run_ingestor.IngestionRunner._parse_since_days("5", default=7) == 5
+
+
 def test_runner_logs_domain_skip(session_factory, caplog):
     headers = {
         "From": '"Blocked" <blocked@blocked.com>',
