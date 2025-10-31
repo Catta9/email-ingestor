@@ -11,15 +11,19 @@ from typing import AsyncGenerator, Dict, List, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from libs.db import SessionLocal, init_db
 from libs.lead_storage import build_structured_workbook
 from libs.models import Contact, ContactTag
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
+from libs.metrics import CONTENT_TYPE_LATEST, render_metrics
 
 
 logger = logging.getLogger(__name__)
@@ -83,6 +87,15 @@ def serialize_contact(contact: Contact) -> Dict[str, object]:
         "notes": contact.notes,
         "tags": [tag.tag for tag in contact.tags],
     }
+class MetricsEndpointMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        if request.url.path == "/metrics":
+            body = render_metrics()
+            return Response(content=body, media_type=CONTENT_TYPE_LATEST)
+        return await call_next(request)
+
+
+app.add_middleware(MetricsEndpointMiddleware)
 
 
 class EventBroadcaster:

@@ -193,6 +193,12 @@ L'interfaccia `FastAPI` espone `/` con una SPA vanilla JS potenziata:
 Esempio di schermata con lead aggiornati:
 
 ![Dashboard lead con stato, note e tag](artifacts/dashboard-leads.png)
+- **Excel**: file creato/aggiornato in `EXCEL_PATH` (default `./data/leads.xlsx`)  
+- **API FastAPI** (se abilitate nel progetto):
+  - `GET /health` → stato servizio
+  - `GET /contacts?limit&offset` → lista contatti (DB)
+  - `GET /export/xlsx` → scarica export Excel corrente
+  - `GET /metrics` → esporta metriche Prometheus
 
 **Avvio API:**
 ```bash
@@ -212,6 +218,41 @@ Per un reset o downgrade:
 
 ```bash
 alembic downgrade -1
+### Osservabilità & Prometheus
+
+L'applicazione espone metriche in formato **Prometheus** all'endpoint `GET /metrics`.
+I contatori principali sono:
+
+- `email_ingestor_processed_total{folder="INBOX",domain="example.com"}` – email elaborate
+- `email_ingestor_leads_total{folder="INBOX",domain="example.com"}` – lead creati
+- `email_ingestor_errors_total{folder="INBOX",domain="example.com"}` – errori di ingestione
+- `email_ingestor_run_discovered_messages{folder="INBOX"}` – email individuate nell'ultima scansione
+
+Esempio di scrape config (`prometheus.yml`):
+
+```yaml
+scrape_configs:
+  - job_name: email-ingestor
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - email-ingestor.local:8000
+```
+
+Alert di base per errori consecutivi (10 minuti):
+
+```yaml
+groups:
+  - name: email-ingestor
+    rules:
+      - alert: EmailIngestorHighErrorRate
+        expr: increase(email_ingestor_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Errori di ingestione rilevati"
+          description: "email_ingestor_errors_total ha registrato nuovi errori negli ultimi 10 minuti."
 ```
 
 ---
@@ -247,12 +288,44 @@ Poi rilancia l’ingestor.
 
 ---
 
+## Docker & Docker Compose
+### Immagine standalone
+```bash
+docker build -t email-ingestor .
+docker run --env-file .env -p 8000:8000 email-ingestor
+```
+- Usa lo stesso `.env` del progetto per configurare IMAP, SMTP e `DATABASE_URL`.
+- La cartella `model_store/` viene copiata nell'immagine: puoi sovrascriverla montando un volume se devi aggiornare i modelli.
+
+### Docker Compose con profili
+Il file `docker-compose.yml` dichiara i servizi:
+- `web`: API FastAPI (porta 8000).
+- `worker`: esegue `scripts.scheduler` per lanciare periodicamente l'ingestor.
+- `db`: Postgres 15 con healthcheck.
+
+Sono definiti due profili Compose per orchestrare gli ambienti:
+- **Dev (`--profile dev`)**: abilita `web-dev` e `worker-dev` con `--reload` e bind mount di `app/`, `libs/` e `scripts/` per hot-reload. Esempio:
+  ```bash
+  docker compose --profile dev up web-dev worker-dev db
+  ```
+- **Prod (`--profile prod`)**: usa i servizi `web` e `worker` basati sull'immagine buildata, più `db` per Postgres. Esempio:
+  ```bash
+  docker compose --profile prod up -d web worker db
+  ```
+
+Entrambi i profili montano i volumi nominati `model_store` e `lead_exports` all'interno del container (`/app/model_store` e `/app/data`) per condividere i modelli ML e l'export Excel (`LEADS_XLSX_PATH`).
+Compose carica automaticamente le variabili dal file `.env` (IMAP/SMTP/Postgres) tramite `env_file`. Personalizza `POSTGRES_*` e `DATABASE_URL` nel tuo `.env` per puntare al servizio `db`.
+
+---
+
 ## Test & CI
 Esecuzione locale:
 ```bash
 pytest -v
 ```
-La pipeline **GitHub Actions** (Tests) esegue i test su ogni push/PR.
+La pipeline **GitHub Actions** (Tests) ora esegue:
+- test unitari classici sull'host runner.
+- uno smoke test Docker che builda l'immagine e lancia `pytest` dentro il container per verificare la compatibilità del runtime.
 
 ---
 
@@ -271,7 +344,7 @@ La pipeline **GitHub Actions** (Tests) esegue i test su ogni push/PR.
 - [x] Test (pytest) + CI  
 - [ ] Alembic + Postgres  
 - [ ] OAuth Gmail (IMAP) / Microsoft 365  
-- [ ] Docker Compose (app + db) e profili prod  
+- [x] Docker Compose (app + db) e profili prod  
 - [ ] UI web per revisione/annotazione lead  
 - [ ] Modelli ML più avanzati (n-gram, TF-IDF, transformer leggeri)  
 - [ ] Metriche & monitoraggio (Prometheus/exporter)  

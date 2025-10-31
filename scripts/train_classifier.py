@@ -7,9 +7,24 @@ import math
 import os
 import random
 import re
+import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
+
+import joblib
+import numpy as np
+
+
+try:
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
+    from sklearn.pipeline import Pipeline
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
+    TfidfVectorizer = LogisticRegression = Pipeline = None  # type: ignore
+    precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -57,13 +72,17 @@ class TrainingConfig:
     use_ngrams: bool = True
     use_features: bool = True
     augment_data: bool = False
+    algorithm: str = "naive_bayes"
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "TrainingConfig":
         dataset_path = Path(args.dataset).expanduser().resolve()
         output_dir = Path(args.output).expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-        output_path = output_dir / "lead_classifier.json"
+        if args.algorithm == "logreg":
+            output_path = output_dir / "lead_classifier.joblib"
+        else:
+            output_path = output_dir / "lead_classifier.json"
         return cls(
             dataset_path=dataset_path,
             output_path=output_path,
@@ -72,6 +91,7 @@ class TrainingConfig:
             use_ngrams=args.use_ngrams,
             use_features=args.use_features,
             augment_data=args.augment,
+            algorithm=args.algorithm,
         )
 
 
@@ -321,8 +341,43 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     
     if config.use_features:
         model["feature_weights"] = feature_weights
-    
+
     return model
+
+
+def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int) -> Pipeline:
+    if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
+        raise RuntimeError(
+            "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+        )
+
+    texts = [_prepare_text(record) for record in train_set]
+    labels = [int(record.get("label", 0)) for record in train_set]
+
+    pipeline = Pipeline(
+        [
+            (
+                "tfidf",
+                TfidfVectorizer(
+                    ngram_range=(1, 2),
+                    min_df=1,
+                    stop_words=list(EXTENDED_STOPWORDS),
+                    strip_accents="unicode",
+                ),
+            ),
+            (
+                "clf",
+                LogisticRegression(
+                    max_iter=1000,
+                    class_weight="balanced",
+                    random_state=random_state,
+                ),
+            ),
+        ]
+    )
+
+    pipeline.fit(texts, labels)
+    return pipeline
 
 
 def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool) -> float:
@@ -376,29 +431,34 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
     return pos_prob / total
 
 
-def _evaluate(
-    model: dict, records: Iterable[dict[str, str]], use_ngrams: bool, use_features: bool
-) -> dict[str, float]:
-    tp = fp = tn = fn = 0
-    for record in records:
-        text = _prepare_text(record)
-        proba = _predict_proba(model, text, use_ngrams, use_features)
-        predicted = 1 if proba >= 0.5 else 0
-        actual = int(record.get("label", 0))
-        if predicted == 1 and actual == 1:
-            tp += 1
-        elif predicted == 1 and actual == 0:
-            fp += 1
-        elif predicted == 0 and actual == 0:
-            tn += 1
-        else:
-            fn += 1
-    total = tp + fp + tn + fn
+def _compute_metrics_from_scores(
+    y_true: Sequence[int], y_scores: Sequence[float], threshold: float = 0.5
+) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
+    if precision_recall_curve is None or roc_curve is None or roc_auc_score is None:
+        raise RuntimeError(
+            "scikit-learn is required to compute evaluation metrics. Install scikit-learn first."
+        )
+
+    y_true_array = np.asarray(y_true)
+    y_scores_array = np.asarray(y_scores)
+    y_pred = (y_scores_array >= threshold).astype(int)
+
+    tp = int(((y_pred == 1) & (y_true_array == 1)).sum())
+    fp = int(((y_pred == 1) & (y_true_array == 0)).sum())
+    tn = int(((y_pred == 0) & (y_true_array == 0)).sum())
+    fn = int(((y_pred == 0) & (y_true_array == 1)).sum())
+
+    total = len(y_true_array)
     accuracy = (tp + tn) / total if total else 0.0
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
-    return {
+
+    fpr, tpr, roc_thresholds = roc_curve(y_true_array, y_scores_array)
+    roc_auc = roc_auc_score(y_true_array, y_scores_array)
+    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_array, y_scores_array)
+
+    metrics = {
         "accuracy": accuracy,
         "precision": precision,
         "recall": recall,
@@ -407,7 +467,32 @@ def _evaluate(
         "fp": fp,
         "tn": tn,
         "fn": fn,
+        "roc_auc": roc_auc,
     }
+    roc_data = {
+        "fpr": fpr.tolist(),
+        "tpr": tpr.tolist(),
+        "thresholds": roc_thresholds.tolist(),
+    }
+    pr_data = {
+        "precision": pr_precision.tolist(),
+        "recall": pr_recall.tolist(),
+        "thresholds": pr_thresholds.tolist(),
+    }
+    return metrics, roc_data, pr_data
+
+
+def _evaluate(
+    model: dict, records: Iterable[dict[str, str]], use_ngrams: bool, use_features: bool
+) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
+    scores: list[float] = []
+    targets: list[int] = []
+    for record in records:
+        text = _prepare_text(record)
+        proba = _predict_proba(model, text, use_ngrams, use_features)
+        scores.append(proba)
+        targets.append(int(record.get("label", 0)))
+    return _compute_metrics_from_scores(targets, scores)
 
 
 def _format_metrics(metrics: dict[str, float]) -> str:
@@ -416,14 +501,64 @@ def _format_metrics(metrics: dict[str, float]) -> str:
         "Precision: {precision:.3f}\n"
         "Recall: {recall:.3f}\n"
         "F1-score: {f1:.3f}\n"
+        "ROC-AUC: {roc_auc:.3f}\n"
         "TP: {tp}  FP: {fp}  TN: {tn}  FN: {fn}\n"
     ).format(**metrics)
+
+
+def _save_metrics_artifacts(
+    output_path: Path,
+    metrics: dict[str, float],
+    roc_data: dict[str, list[float]],
+    pr_data: dict[str, list[float]],
+) -> None:
+    metrics_text_path = output_path.with_suffix(".metrics.txt")
+    metrics_json_path = output_path.with_suffix(".metrics.json")
+    curves_json_path = output_path.with_suffix(".curves.json")
+
+    metrics_text_path.write_text(_format_metrics(metrics), encoding="utf-8")
+
+    metrics_payload = {"metrics": metrics}
+    metrics_json_path.write_text(
+        json.dumps(metrics_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+    curves_payload = {"roc": roc_data, "precision_recall": pr_data}
+    curves_json_path.write_text(
+        json.dumps(curves_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _copy_model_to_default_store(model_path: Path) -> None:
+    default_store_env = os.getenv("LEAD_MODEL_PATH")
+    if default_store_env:
+        default_store = Path(default_store_env)
+    else:
+        default_store = Path("model_store") / model_path.name
+
+    if default_store.suffix != model_path.suffix:
+        default_store = default_store.with_suffix(model_path.suffix)
+
+    try:
+        if default_store.resolve() == model_path.resolve():
+            return
+    except FileNotFoundError:
+        pass
+
+    default_store.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(model_path, default_store)
+
+    metadata_path = model_path.with_suffix(".meta.json")
+    if metadata_path.exists():
+        shutil.copy2(metadata_path, default_store.with_suffix(".meta.json"))
+
+    logger.info("Copied model to default store: %s", default_store)
 
 
 def train(config: TrainingConfig) -> None:
     records = _load_records(config.dataset_path, augment=config.augment_data)
     train_set, test_set = _split_dataset(records, config.test_size, config.random_state)
-    
+
     pos_train = sum(1 for r in train_set if r.get('label') == 1)
     neg_train = len(train_set) - pos_train
     pos_test = sum(1 for r in test_set if r.get('label') == 1)
@@ -434,9 +569,59 @@ def train(config: TrainingConfig) -> None:
         f"test={len(test_set)} (pos={pos_test}, neg={neg_test})"
     )
 
-    model = _train_naive_bayes(train_set, config)
-    metrics = _evaluate(model, test_set, config.use_ngrams, config.use_features)
-    logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
+    logger.info("Selected training algorithm: %s", config.algorithm)
+
+    if config.algorithm == "logreg":
+        pipeline = _train_logistic_regression(train_set, config.random_state)
+        model_output_path = config.output_path
+        joblib.dump(pipeline, model_output_path)
+        logger.info("Persisted TF-IDF + Logistic Regression pipeline to %s", model_output_path)
+
+        texts_test = [_prepare_text(record) for record in test_set]
+        y_true = [int(record.get("label", 0)) for record in test_set]
+        y_scores = pipeline.predict_proba(texts_test)[:, 1].tolist()
+
+        metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores)
+        logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
+
+        metadata = {
+            "algorithm": "tfidf_logreg",
+            "version": 1,
+            "trained_at": datetime.utcnow().isoformat() + "Z",
+            "threshold": 0.5,
+        }
+        metadata_path = model_output_path.with_suffix(".meta.json")
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logger.info("Saved model metadata to %s", metadata_path)
+
+    elif config.algorithm == "naive_bayes":
+        model = _train_naive_bayes(train_set, config)
+        metrics, roc_data, pr_data = _evaluate(
+            model, test_set, config.use_ngrams, config.use_features
+        )
+        logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
+
+        model_output_path = config.output_path
+        model_output_path.write_text(
+            json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        logger.info("Model persisted to %s", model_output_path)
+
+        # Backwards compatible metadata for downstream tooling
+        metadata = {
+            "algorithm": "naive_bayes",
+            "version": model.get("version", 1),
+            "trained_at": datetime.utcnow().isoformat() + "Z",
+            "threshold": 0.5,
+        }
+        metadata_path = model_output_path.with_suffix(".meta.json")
+        metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    else:
+        raise ValueError(f"Unsupported algorithm: {config.algorithm}")
 
     # Warning su overfitting
     if metrics['accuracy'] > 0.95:
@@ -446,22 +631,10 @@ def train(config: TrainingConfig) -> None:
             metrics['accuracy']
         )
 
-    config.output_path.write_text(
-        json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    logger.info("Model persisted to %s", config.output_path)
+    _save_metrics_artifacts(model_output_path, metrics, roc_data, pr_data)
+    logger.info("Saved evaluation metrics and curves next to %s", model_output_path)
 
-    metrics_path = config.output_path.with_suffix(".metrics.txt")
-    metrics_path.write_text(_format_metrics(metrics), encoding="utf-8")
-    logger.info("Saved evaluation metrics to %s", metrics_path)
-
-    default_store = Path(os.getenv("LEAD_MODEL_PATH", "model_store/lead_classifier.json"))
-    if default_store.resolve() != config.output_path.resolve():
-        default_store.parent.mkdir(parents=True, exist_ok=True)
-        default_store.write_text(
-            json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        logger.info("Copied model to default store: %s", default_store)
+    _copy_model_to_default_store(model_output_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -502,6 +675,12 @@ def parse_args() -> argparse.Namespace:
         "--augment",
         action="store_true",
         help="Enable data augmentation (synonym replacement)",
+    )
+    parser.add_argument(
+        "--algorithm",
+        choices=["naive_bayes", "logreg"],
+        default="naive_bayes",
+        help="Algorithm to train: 'naive_bayes' (legacy) or 'logreg' (TF-IDF + Logistic Regression)",
     )
     parser.add_argument(
         "--log-level",
