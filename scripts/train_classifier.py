@@ -9,11 +9,43 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable
 
 
 logger = logging.getLogger(__name__)
 _TOKEN_RE = re.compile(r"[\w']+")
+
+# Stopwords estese (stesso set del classifier)
+EXTENDED_STOPWORDS = {
+    "a", "ai", "al", "alla", "alle", "allo", "anche", "avere", "che", "chi", "ci", "con",
+    "cosa", "cui", "da", "dal", "dalla", "dalle", "dallo", "degli", "dei", "del", "della",
+    "delle", "dello", "di", "dove", "e", "ed", "essere", "gli", "ha", "hai", "hanno", "ho",
+    "i", "il", "in", "io", "la", "le", "lei", "li", "lo", "loro", "lui", "ma", "me", "mi",
+    "mio", "nel", "nella", "nelle", "nello", "noi", "non", "nostro", "o", "per", "però",
+    "più", "quale", "quando", "quei", "quelle", "quelli", "quello", "questo", "questi",
+    "qui", "se", "sei", "si", "sia", "siamo", "siete", "sono", "sopra", "sotto", "sta",
+    "stato", "su", "sua", "sue", "sui", "sul", "sulla", "sulle", "sullo", "suo", "suoi",
+    "ti", "tra", "tu", "tua", "tue", "tuo", "tuoi", "tutto", "un", "una", "uno", "va",
+    "vai", "voi", "vostro",
+    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any",
+    "are", "aren't", "as", "at", "be", "because", "been", "before", "being", "below",
+    "between", "both", "but", "by", "can", "can't", "cannot", "could", "couldn't", "did",
+    "didn't", "do", "does", "doesn't", "doing", "don't", "down", "during", "each", "few",
+    "for", "from", "further", "had", "hadn't", "has", "hasn't", "have", "haven't", "having",
+    "he", "he'd", "he'll", "he's", "her", "here", "here's", "hers", "herself", "him",
+    "himself", "his", "how", "how's", "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into",
+    "is", "isn't", "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't",
+    "my", "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other",
+    "ought", "our", "ours", "ourselves", "out", "over", "own", "same", "shan't", "she",
+    "she'd", "she'll", "she's", "should", "shouldn't", "so", "some", "such", "than", "that",
+    "that's", "the", "their", "theirs", "them", "themselves", "then", "there", "there's",
+    "these", "they", "they'd", "they'll", "they're", "they've", "this", "those", "through",
+    "to", "too", "under", "until", "up", "very", "was", "wasn't", "we", "we'd", "we'll",
+    "we're", "we've", "were", "weren't", "what", "what's", "when", "when's", "where",
+    "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't",
+    "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
+    "yourself", "yourselves"
+}
 
 
 @dataclass
@@ -22,6 +54,9 @@ class TrainingConfig:
     output_path: Path
     test_size: float = 0.2
     random_state: int = 42
+    use_ngrams: bool = True
+    use_features: bool = True
+    augment_data: bool = False
 
     @classmethod
     def from_args(cls, args: argparse.Namespace) -> "TrainingConfig":
@@ -34,11 +69,94 @@ class TrainingConfig:
             output_path=output_path,
             test_size=args.test_size,
             random_state=args.random_state,
+            use_ngrams=args.use_ngrams,
+            use_features=args.use_features,
+            augment_data=args.augment,
         )
 
 
-# ---------------------------------------------------------------------------
-def _load_records(path: Path) -> list[dict[str, str]]:
+def _tokenize(text: str) -> list[str]:
+    tokens = [token for token in _TOKEN_RE.findall(text.lower()) if token]
+    return [t for t in tokens if t not in EXTENDED_STOPWORDS and len(t) > 2]
+
+
+def _extract_ngrams(tokens: list[str], n: int = 2) -> list[str]:
+    if len(tokens) < n:
+        return []
+    return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+
+
+def _extract_features(text: str) -> dict[str, float]:
+    """Estrae feature numeriche (stesso del classifier)."""
+    text_lower = text.lower()
+    urgency_words = ['urgente', 'urgent', 'asap', 'immediato', 'subito', 'prima possibile']
+    urgency_count = sum(1 for word in urgency_words if word in text_lower)
+    greeting_words = ['buongiorno', 'buonasera', 'gentile', 'dear', 'hello', 'hi', 'salve']
+    has_greeting = any(word in text_lower for word in greeting_words)
+    question_count = text.count('?')
+    word_count = len(text.split())
+    has_phone = bool(re.search(r'\+?\d[\d\s().-]{7,}', text))
+    has_email = bool(re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text))
+    lines = text.split('\n')
+    signature_indicators = ['tel', 'phone', 'mobile', 'cell', 'email', '@']
+    signature_score = sum(
+        1 for line in lines[-5:] if any(ind in line.lower() for ind in signature_indicators)
+    ) / 5.0
+    
+    return {
+        'urgency_score': min(urgency_count / 3.0, 1.0),
+        'has_greeting': float(has_greeting),
+        'question_density': min(question_count / max(word_count / 50, 1), 1.0),
+        'length_score': min(word_count / 200.0, 1.0),
+        'has_contact_info': float(has_phone or has_email),
+        'signature_score': signature_score,
+    }
+
+
+def _augment_record(record: dict[str, str]) -> list[dict[str, str]]:
+    """Data augmentation: genera varianti di un record."""
+    augmented = [record]  # include originale
+    
+    # Sinonimi comuni IT/EN
+    synonyms = {
+        'preventivo': ['quotazione', 'stima', 'budget'],
+        'richiesta': ['domanda', 'richiedo', 'vorrei'],
+        'urgente': ['immediato', 'asap', 'subito'],
+        'quote': ['quotation', 'estimate', 'pricing'],
+        'request': ['need', 'looking for', 'inquire'],
+    }
+    
+    subject = record.get('subject', '')
+    body = record.get('body', '')
+    
+    # Genera 1-2 varianti con sinonimi
+    for original, replacements in synonyms.items():
+        if original in subject.lower() or original in body.lower():
+            for replacement in replacements[:1]:  # usa solo 1 sinonimo
+                new_subject = re.sub(
+                    r'\b' + re.escape(original) + r'\b', 
+                    replacement, 
+                    subject, 
+                    flags=re.IGNORECASE
+                )
+                new_body = re.sub(
+                    r'\b' + re.escape(original) + r'\b', 
+                    replacement, 
+                    body, 
+                    flags=re.IGNORECASE
+                )
+                if new_subject != subject or new_body != body:
+                    augmented.append({
+                        'label': record['label'],
+                        'subject': new_subject,
+                        'body': new_body
+                    })
+                    break  # 1 variante per sinonimo
+    
+    return augmented[:3]  # max 3 varianti (originale + 2)
+
+
+def _load_records(path: Path, augment: bool = False) -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
     records: list[dict[str, str]] = []
@@ -53,9 +171,16 @@ def _load_records(path: Path) -> list[dict[str, str]]:
                 raise ValueError(f"Invalid JSON at line {line_number}: {exc}") from exc
             if "label" not in record:
                 raise ValueError(f"Missing 'label' field at line {line_number}")
-            records.append(record)
+            
+            if augment and record.get('label') == 1:  # solo lead positivi
+                records.extend(_augment_record(record))
+            else:
+                records.append(record)
+    
     if not records:
         raise ValueError("Dataset is empty")
+    
+    logger.info(f"Loaded {len(records)} records (augmentation: {augment})")
     return records
 
 
@@ -65,10 +190,6 @@ def _prepare_text(record: dict[str, str]) -> str:
     if subject and body:
         return f"{subject}\n{body}"
     return subject or body
-
-
-def _tokenize(text: str) -> list[str]:
-    return [token for token in _TOKEN_RE.findall(text.lower()) if token]
 
 
 def _split_dataset(
@@ -97,19 +218,76 @@ def _split_dataset(
     return train, test
 
 
-def _count_tokens(records: Iterable[dict[str, str]]) -> tuple[dict[str, int], dict[str, int]]:
-    counts_positive: dict[str, int] = {}
-    counts_negative: dict[str, int] = {}
+def _count_tokens_and_bigrams(
+    records: Iterable[dict[str, str]], use_ngrams: bool
+) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
+    """Conta unigrams e bigrams per classe."""
+    counts_pos: dict[str, int] = {}
+    counts_neg: dict[str, int] = {}
+    bigram_counts_pos: dict[str, int] = {}
+    bigram_counts_neg: dict[str, int] = {}
+    
     for record in records:
         tokens = _tokenize(_prepare_text(record))
-        target = counts_positive if int(record.get("label", 0)) == 1 else counts_negative
+        target = counts_pos if int(record.get("label", 0)) == 1 else counts_neg
+        
+        # Unigrams
         for token in tokens:
             target[token] = target.get(token, 0) + 1
-    return counts_positive, counts_negative
+        
+        # Bigrams
+        if use_ngrams:
+            bigrams = _extract_ngrams(tokens, n=2)
+            bigram_target = bigram_counts_pos if int(record.get("label", 0)) == 1 else bigram_counts_neg
+            for bigram in bigrams:
+                bigram_target[bigram] = bigram_target.get(bigram, 0) + 1
+    
+    return counts_pos, counts_neg, bigram_counts_pos, bigram_counts_neg
 
 
-def _train_naive_bayes(train_set: list[dict[str, str]]):
-    pos_counts, neg_counts = _count_tokens(train_set)
+def _compute_feature_weights(
+    records: Iterable[dict[str, str]], use_features: bool
+) -> dict[str, float]:
+    """Calcola correlazione feature -> lead per pesatura."""
+    if not use_features:
+        return {}
+    
+    feature_sums_pos = {}
+    feature_sums_neg = {}
+    count_pos = count_neg = 0
+    
+    for record in records:
+        text = _prepare_text(record)
+        features = _extract_features(text)
+        is_pos = int(record.get("label", 0)) == 1
+        
+        if is_pos:
+            count_pos += 1
+            for k, v in features.items():
+                feature_sums_pos[k] = feature_sums_pos.get(k, 0.0) + v
+        else:
+            count_neg += 1
+            for k, v in features.items():
+                feature_sums_neg[k] = feature_sums_neg.get(k, 0.0) + v
+    
+    # Calcola media per classe
+    weights = {}
+    for feat in feature_sums_pos.keys():
+        avg_pos = feature_sums_pos[feat] / max(count_pos, 1)
+        avg_neg = feature_sums_neg.get(feat, 0) / max(count_neg, 1)
+        # Peso = differenza normalizzata
+        weights[feat] = (avg_pos - avg_neg) * 2.0  # scala per effetto maggiore
+    
+    logger.info(f"Feature weights: {weights}")
+    return weights
+
+
+def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
+    pos_counts, neg_counts, bigram_pos, bigram_neg = _count_tokens_and_bigrams(
+        train_set, config.use_ngrams
+    )
+    feature_weights = _compute_feature_weights(train_set, config.use_features)
+    
     total_pos_tokens = sum(pos_counts.values())
     total_neg_tokens = sum(neg_counts.values())
     vocab = set(pos_counts) | set(neg_counts)
@@ -119,7 +297,7 @@ def _train_naive_bayes(train_set: list[dict[str, str]]):
     total_docs = max(1, len(train_set))
 
     model = {
-        "version": 1,
+        "version": 2,  # versione aggiornata
         "class_priors": {
             "1": num_pos / total_docs,
             "0": num_neg / total_docs,
@@ -134,10 +312,21 @@ def _train_naive_bayes(train_set: list[dict[str, str]]):
         },
         "vocabulary_size": len(vocab),
     }
+    
+    if config.use_ngrams:
+        model["bigram_counts"] = {
+            "1": bigram_pos,
+            "0": bigram_neg,
+        }
+    
+    if config.use_features:
+        model["feature_weights"] = feature_weights
+    
     return model
 
 
-def _predict_proba(model: dict, text: str) -> float:
+def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool) -> float:
+    """Predizione con bigrams e features."""
     tokens = _tokenize(text)
     if not tokens:
         return 0.0
@@ -153,11 +342,30 @@ def _predict_proba(model: dict, text: str) -> float:
     log_pos = math.log(prior_pos)
     log_neg = math.log(prior_neg)
 
+    # Unigrams
     for token in tokens:
         pos_count = pos_counts.get(token, 0)
         neg_count = neg_counts.get(token, 0)
         log_pos += math.log((pos_count + 1) / (total_pos + vocab_size))
         log_neg += math.log((neg_count + 1) / (total_neg + vocab_size))
+
+    # Bigrams
+    if use_ngrams and "bigram_counts" in model:
+        bigrams = _extract_ngrams(tokens, n=2)
+        bigram_pos = model["bigram_counts"]["1"]
+        bigram_neg = model["bigram_counts"]["0"]
+        for bigram in bigrams:
+            log_pos += 0.5 * math.log((bigram_pos.get(bigram, 0) + 1) / (total_pos + vocab_size))
+            log_neg += 0.5 * math.log((bigram_neg.get(bigram, 0) + 1) / (total_neg + vocab_size))
+
+    # Features
+    if use_features and "feature_weights" in model:
+        features = _extract_features(text)
+        weights = model["feature_weights"]
+        for feat_name, feat_value in features.items():
+            weight = weights.get(feat_name, 0.0)
+            log_pos += feat_value * weight
+            log_neg -= feat_value * weight * 0.5
 
     max_log = max(log_pos, log_neg)
     pos_prob = math.exp(log_pos - max_log)
@@ -168,11 +376,13 @@ def _predict_proba(model: dict, text: str) -> float:
     return pos_prob / total
 
 
-def _evaluate(model: dict, records: Iterable[dict[str, str]]) -> dict[str, float]:
+def _evaluate(
+    model: dict, records: Iterable[dict[str, str]], use_ngrams: bool, use_features: bool
+) -> dict[str, float]:
     tp = fp = tn = fn = 0
     for record in records:
         text = _prepare_text(record)
-        proba = _predict_proba(model, text)
+        proba = _predict_proba(model, text, use_ngrams, use_features)
         predicted = 1 if proba >= 0.5 else 0
         actual = int(record.get("label", 0))
         if predicted == 1 and actual == 1:
@@ -211,15 +421,34 @@ def _format_metrics(metrics: dict[str, float]) -> str:
 
 
 def train(config: TrainingConfig) -> None:
-    records = _load_records(config.dataset_path)
+    records = _load_records(config.dataset_path, augment=config.augment_data)
     train_set, test_set = _split_dataset(records, config.test_size, config.random_state)
-    logger.info("Loaded %d records (train=%d, test=%d)", len(records), len(train_set), len(test_set))
+    
+    pos_train = sum(1 for r in train_set if r.get('label') == 1)
+    neg_train = len(train_set) - pos_train
+    pos_test = sum(1 for r in test_set if r.get('label') == 1)
+    neg_test = len(test_set) - pos_test
+    
+    logger.info(
+        f"Dataset split: train={len(train_set)} (pos={pos_train}, neg={neg_train}), "
+        f"test={len(test_set)} (pos={pos_test}, neg={neg_test})"
+    )
 
-    model = _train_naive_bayes(train_set)
-    metrics = _evaluate(model, test_set)
+    model = _train_naive_bayes(train_set, config)
+    metrics = _evaluate(model, test_set, config.use_ngrams, config.use_features)
     logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
 
-    config.output_path.write_text(json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Warning su overfitting
+    if metrics['accuracy'] > 0.95:
+        logger.warning(
+            "⚠️  Very high accuracy (%.3f) may indicate overfitting. "
+            "Consider expanding the dataset or reviewing test/train split.",
+            metrics['accuracy']
+        )
+
+    config.output_path.write_text(
+        json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     logger.info("Model persisted to %s", config.output_path)
 
     metrics_path = config.output_path.with_suffix(".metrics.txt")
@@ -229,11 +458,13 @@ def train(config: TrainingConfig) -> None:
     default_store = Path(os.getenv("LEAD_MODEL_PATH", "model_store/lead_classifier.json"))
     if default_store.resolve() != config.output_path.resolve():
         default_store.parent.mkdir(parents=True, exist_ok=True)
-        default_store.write_text(json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8")
+        default_store.write_text(
+            json.dumps(model, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         logger.info("Copied model to default store: %s", default_store)
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the lead classification model")
     parser.add_argument(
         "--dataset",
@@ -258,15 +489,36 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Random seed for the train/test split",
     )
     parser.add_argument(
+        "--no-ngrams",
+        action="store_true",
+        help="Disable bigram features",
+    )
+    parser.add_argument(
+        "--no-features",
+        action="store_true",
+        help="Disable numerical features",
+    )
+    parser.add_argument(
+        "--augment",
+        action="store_true",
+        help="Enable data augmentation (synonym replacement)",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         help="Logging level (e.g. INFO, DEBUG)",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args()
+    args.use_ngrams = not args.no_ngrams
+    args.use_features = not args.no_features
+    return args
 
 
 if __name__ == "__main__":
     args = parse_args()
-    logging.basicConfig(level=args.log_level.upper())
+    logging.basicConfig(
+        level=args.log_level.upper(),
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    )
     cfg = TrainingConfig.from_args(args)
     train(cfg)

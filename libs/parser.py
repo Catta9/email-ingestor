@@ -4,62 +4,65 @@ from typing import Optional, Dict, Iterable, Tuple
 import re
 from email.utils import parseaddr, getaddresses
 
-## parser heuristico per estrarre campi contatto da testo email
-## Regex = regular expression: un linguaggio compatto per riconoscere pattern di testo.
-# EMAIL_RE cerca sequenze tipo qualcosa@dominio.estensione.
-# PHONE_RE è più permissivo: supporta prefisso +39, spazi, trattini, parentesi.
-
+# Regex migliorata
 EMAIL_RE = re.compile(r'[\w\.-]+@[\w\.-]+\.\w+')
-# phone regex that captures sequences with at least 8 digits including separators
-PHONE_RE = re.compile(r'(?:\+?\d[\d\s().-]{6,}\d)')
+# Phone con supporto internazionale esteso
+PHONE_RE = re.compile(r'(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{1,4}\)?[\s.-]?)?\d[\d\s().-]{6,}\d')
+
 ORG_HINTS = [
-    "azienda",
-    "company",
-    "impresa",
-    "org",
-    "organizzazione",
-    "società",
-    "societa",
-    "s.r.l",
-    "srl",
-    "s.p.a",
-    "spa",
-    "inc",
-    "ltd",
-    "llc",
+    "azienda", "company", "impresa", "org", "organizzazione", "società", "societa",
+    "s.r.l", "srl", "s.p.a", "spa", "s.a.s", "sas", "s.n.c", "snc",
+    "inc", "ltd", "llc", "corp", "corporation", "gmbh", "sarl", "limited",
 ]
 
+# Pattern contestuali per telefono (label: priorità)
 PHONE_LABEL_SCORES = {
-    "cell": 4,
-    "mobile": 4,
-    "tel": 2,
-    "telefono": 2,
-    "phone": 2,
-    "ufficio": 1,
-    "office": 1,
+    "cell": 5, "cellulare": 5, "mobile": 5, "mobil": 5,
+    "tel": 3, "telefono": 3, "phone": 3, "ph": 3,
+    "ufficio": 2, "office": 2, "lavoro": 2, "work": 2,
+    "fax": 0,  # ignora fax
 }
 
+
 def normalize_whitespace(s: str) -> str:
+    """Normalizza spazi multipli."""
     return re.sub(r'\s+', ' ', s).strip()
 
 
-def set_result_name(result: Dict[str, Optional[str]], full_name: str, overwrite: bool = False) -> None:
+def set_result_name(
+    result: Dict[str, Optional[str]], 
+    full_name: str, 
+    overwrite: bool = False
+) -> None:
+    """Estrae first_name e last_name da nome completo."""
     if not full_name:
         return
     full_name = normalize_whitespace(full_name)
     if not full_name:
         return
-    parts = full_name.split(" ")
-    first = parts[0]
-    last = " ".join(parts[1:]) if len(parts) >= 2 else None
+    
+    # Rimuovi titoli comuni
+    titles = ['dr', 'dott', 'ing', 'prof', 'avv', 'mr', 'mrs', 'ms', 'miss', 'sir']
+    parts = full_name.lower().split()
+    parts = [p for p in parts if p.rstrip('.') not in titles]
+    
+    if not parts:
+        return
+    
+    first = parts[0].title()
+    last = " ".join(p.title() for p in parts[1:]) if len(parts) >= 2 else None
+    
     if overwrite or not result.get("first_name"):
         result["first_name"] = first
     if last and (overwrite or not result.get("last_name")):
         result["last_name"] = last
 
 
-def get_header_addresses(headers: Dict[str, str], header_names: Iterable[str]) -> Iterable[Tuple[str, str]]:
-    """Return parsed (name, email) tuples for the given header names (case insensitive)."""
+def get_header_addresses(
+    headers: Dict[str, str], 
+    header_names: Iterable[str]
+) -> Iterable[Tuple[str, str]]:
+    """Ritorna tuple (nome, email) dai header specificati."""
     target_names = {name.lower() for name in header_names}
     for key, value in headers.items():
         if key.lower() in target_names and value:
@@ -70,23 +73,89 @@ def get_header_addresses(headers: Dict[str, str], header_names: Iterable[str]) -
 
 
 def normalize_phone(phone: str) -> Optional[str]:
+    """Normalizza numero di telefono."""
+    # Rimuovi tutto tranne cifre e +
     digits = re.sub(r"[^\d+]", "", phone)
-    # basic sanity check: ignore very short strings (<7 digits)
+    
+    # Conta cifre effettive (escluso +)
     digit_count = len(re.sub(r"\D", "", digits))
     if digit_count < 7:
         return None
-    # convert leading 00 to + to normalize international prefix
+    
+    # Converti 00 iniziale in +
     if digits.startswith("00"):
         digits = "+" + digits[2:]
+    
+    # Standardizza prefisso italiano
+    if digits.startswith("39") and not digits.startswith("+"):
+        digits = "+39" + digits[2:]
+    elif re.match(r'^3\d{8,9}$', digits):  # cellulare IT senza prefisso
+        digits = "+39" + digits
+    
     return digits
 
-def parse_contact_fields(text: str, headers: dict[str, str] | None = None) -> Dict[str, Optional[str]]:
+
+def extract_org_from_line(line: str) -> Optional[str]:
+    """Estrae organizzazione da una riga con pattern contestuali."""
+    stripped = line.strip()
+    if not stripped:
+        return None
+    
+    low = stripped.lower()
+    
+    # Pattern: "Azienda: Nome S.r.l."
+    if ":" in stripped:
+        before, after = stripped.split(":", 1)
+        if any(h in before.lower() for h in ORG_HINTS):
+            candidate = after.strip()
+            if candidate:
+                return candidate
+    
+    # Pattern: "Azienda - Nome S.r.l."
+    if "-" in stripped:
+        parts = stripped.split("-", 1)
+        before, after = parts[0].strip(), parts[1].strip()
+        if any(h in before.lower() for h in ORG_HINTS):
+            if after:
+                return after
+    
+    # Pattern: "Nome S.r.l." (riga contiene sigla societaria)
+    societale_pattern = r'\b(?:s\.r\.l|srl|s\.p\.a|spa|inc|ltd|llc|corp|gmbh|sarl)\b'
+    if re.search(societale_pattern, low):
+        # Rimuovi prefissi comuni
+        candidate = re.sub(
+            r"(?i)^(?:azienda|company|impresa|organizzazione|org|società|societa)[:\-\s]*",
+            "",
+            stripped,
+        ).strip(" -")
+        if candidate:
+            return candidate
+    
+    # Fallback: riga con hint ma senza separatore chiaro
+    if any(h in low for h in ORG_HINTS):
+        candidate = re.sub(
+            r"(?i)^(?:azienda|company|impresa|organizzazione|org|società|societa)[:\-\s]*",
+            "",
+            stripped,
+        ).strip(" -")
+        if candidate and len(candidate) > 3:
+            return candidate
+    
+    return None
+
+
+def parse_contact_fields(
+    text: str, 
+    headers: dict[str, str] | None = None
+) -> Dict[str, Optional[str]]:
     """
-    Very simple heuristic parser:
-    - Name from From: header
-    - Email from From: header, fallback to first email in body
-    - Phone via basic regex
-    - Org by scanning lines for org hints
+    Parser euristico migliorato per estrarre contatti da email.
+    
+    Priorità:
+    1. Email: Reply-To > From > primo match in body
+    2. Nome: Reply-To > From
+    3. Telefono: label-based scoring (preferisce cell/mobile)
+    4. Org: pattern contestuali con sigla societaria
     """
     headers = headers or {}
     result = {
@@ -97,55 +166,53 @@ def parse_contact_fields(text: str, headers: dict[str, str] | None = None) -> Di
         "org": None,
     }
 
-    # Email & name from From header using email.utils.parseaddr
-    from_hdr = next((v for k, v in headers.items() if k.lower() == "from"), None)
-    if from_hdr:
-        name, email = parseaddr(from_hdr)
+    # === EMAIL & NOME da header ===
+    
+    # Priorità 1: Reply-To
+    for name, email in get_header_addresses(headers, ["reply-to"]):
         if email:
             result["email"] = email.strip()
-        if name:
-            set_result_name(result, name)
-
-    # Use Reply-To name if present (takes precedence over generic From names)
-    for name, _ in get_header_addresses(headers, ["reply-to"]):
         if name:
             set_result_name(result, name, overwrite=True)
-            break
-
-    # Prefer Reply-To email if present
-    for _, email in get_header_addresses(headers, ["reply-to"]):
-        if email:
-            result["email"] = email.strip()
-            break
-
-    # If still no email, ensure we consider From (if parseaddr didn't find)
+        break  # prendi solo il primo
+    
+    # Priorità 2: From (se Reply-To non presente)
     if not result["email"]:
-        for _, email in get_header_addresses(headers, ["from"]):
+        for name, email in get_header_addresses(headers, ["from"]):
             if email:
                 result["email"] = email.strip()
-                break
-
-    # Se email non trovata, cerca nel testo con regex (primo match)
+            if name:
+                set_result_name(result, name)
+            break
+    
+    # Fallback: email nel body
     if not result["email"]:
-        m = EMAIL_RE.search(text)
-        if m:
-            result["email"] = m.group(0)
+        match = EMAIL_RE.search(text)
+        if match:
+            result["email"] = match.group(0)
 
-    # Cerca telefono con regex valutando etichette
-    phone_candidates: list[Tuple[int, int, str]] = []
+    # === TELEFONO con scoring contestuale ===
+    
+    phone_candidates: list[Tuple[int, int, str]] = []  # (score, idx, number)
     seen_numbers: set[str] = set()
+    
     for idx, line in enumerate(text.splitlines()):
         matches = list(PHONE_RE.finditer(line))
         if not matches:
             continue
+        
         low = line.lower()
-        if "fax" in low and not any(h in low for h in ("cell", "mobile")):
-            # skip fax-only lines
+        
+        # Skip righe con solo fax
+        if "fax" in low and not any(h in low for h in ("cell", "mobile", "tel")):
             continue
+        
+        # Calcola score in base a label
         score = 0
         for hint, hint_score in PHONE_LABEL_SCORES.items():
             if hint in low:
                 score = max(score, hint_score)
+        
         for m in matches:
             raw_phone = m.group(0)
             normalized = normalize_phone(raw_phone)
@@ -153,45 +220,26 @@ def parse_contact_fields(text: str, headers: dict[str, str] | None = None) -> Di
                 continue
             seen_numbers.add(normalized)
             phone_candidates.append((score, idx, normalized))
-
+    
+    # Fallback: scan intero testo se niente trovato in righe labellate
     if not phone_candidates:
-        # fallback to scanning whole text if nothing found in labelled lines
         for m in PHONE_RE.finditer(text):
             normalized = normalize_phone(m.group(0))
             if normalized and normalized not in seen_numbers:
                 seen_numbers.add(normalized)
                 phone_candidates.append((0, len(phone_candidates), normalized))
-
+    
+    # Seleziona telefono con score più alto
     if phone_candidates:
-        # sort by score desc, then by appearance order (idx)
-        phone_candidates.sort(key=lambda item: (-item[0], item[1]))
+        phone_candidates.sort(key=lambda x: (-x[0], x[1]))  # score desc, poi ordine
         result["phone"] = phone_candidates[0][2]
 
-    ## cerca a dedurre la azienda cercando righe con parole chiave (ORG_HINTS)
-    # Org: scan lines for hints
+    # === ORGANIZZAZIONE ===
+    
     for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped:
-            continue
-        low = stripped.lower()
-        if any(h in low for h in ORG_HINTS):
-            candidate = stripped
-            if ":" in stripped:
-                before, after = stripped.split(":", 1)
-                if any(h in before.lower() for h in ORG_HINTS):
-                    candidate = after.strip()
-            elif "-" in stripped:
-                before, after = stripped.split("-", 1)
-                if any(h in before.lower() for h in ORG_HINTS):
-                    candidate = after.strip()
-
-            candidate = re.sub(
-                r"(?i)^(?:azienda|company|impresa|organizzazione|org|società|societa)[:\-\s]*",
-                "",
-                candidate,
-            ).strip(" -")
-            if candidate:
-                result["org"] = candidate
-                break
+        org = extract_org_from_line(line)
+        if org:
+            result["org"] = org
+            break
 
     return result

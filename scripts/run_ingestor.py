@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
+import sys
 from contextlib import suppress
 from datetime import datetime
 from email.utils import parseaddr, parsedate_to_datetime
@@ -27,7 +29,53 @@ from libs.notifier import EmailNotifier
 load_dotenv()
 
 
-logger = logging.getLogger(__name__)
+# Logging strutturato con JSON per facilità parsing
+class StructuredFormatter(logging.Formatter):
+    """Formatter JSON per log strutturati."""
+    
+    def format(self, record: logging.LogRecord) -> str:
+        log_obj = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        
+        # Aggiungi campi extra strutturati
+        for attr in ["imap_uid", "message_id", "from_domain", "contact_id", "esito"]:
+            if hasattr(record, attr):
+                log_obj[attr] = getattr(record, attr)
+        
+        # Aggiungi exception se presente
+        if record.exc_info:
+            log_obj["exception"] = self.formatException(record.exc_info)
+        
+        return json.dumps(log_obj, ensure_ascii=False)
+
+
+def setup_logging():
+    """Configura logging strutturato."""
+    log_format = os.getenv("LOG_FORMAT", "json").lower()
+    log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+    
+    handler = logging.StreamHandler(sys.stdout)
+    
+    if log_format == "json":
+        handler.setFormatter(StructuredFormatter())
+    else:
+        handler.setFormatter(
+            logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        )
+    
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    root_logger.handlers = [handler]
+    
+    return logging.getLogger(__name__)
+
+
+logger = setup_logging()
+
 
 def allowed_sender(headers: dict) -> tuple[bool, str | None]:
     raw_from = headers.get("From") or ""
@@ -96,18 +144,37 @@ def _use_hybrid_strategy() -> bool:
     return strategy == "hybrid"
 
 
-def matches_lead_keywords(headers: dict[str, str], body: str) -> bool:
+def matches_lead_keywords(headers: dict[str, str], body: str) -> tuple[bool, float, str]:
+    """
+    Verifica se l'email è un lead.
+    
+    Returns:
+        (is_lead, score, confidence)
+    """
     classifier = _get_ml_classifier() if _use_ml_strategy() else None
+    
     if classifier is not None:
-        if classifier.is_relevant(headers, body):
-            return True
+        score, confidence = classifier.score_with_confidence(headers, body)
+        is_lead = score >= classifier.config.threshold
+        
+        if is_lead:
+            return True, score, confidence
+        
+        # Hybrid fallback
         if _use_hybrid_strategy():
             scorer = _get_rule_based_scorer()
-            return scorer.is_relevant(headers, body)
-        return False
-
+            rule_score = scorer.score(headers, body)
+            rule_is_lead = scorer.is_relevant(headers, body)
+            if rule_is_lead:
+                return True, rule_score, "rule_fallback"
+        
+        return False, score, confidence
+    
+    # Rule-based only
     scorer = _get_rule_based_scorer()
-    return scorer.is_relevant(headers, body)
+    score = scorer.score(headers, body)
+    is_lead = scorer.is_relevant(headers, body)
+    return is_lead, score, "rule_based"
 
 
 def _already_processed(db, message_id: str | None, uid_str: str | None) -> bool:
@@ -154,10 +221,9 @@ def _mark_sender_disallowed(
         db.add(ProcessedMessage(message_id=stored_message_id, imap_uid=uid_str))
         db.commit()
 
-## è lo script che userà prod dev
+
 def main():
-    ## assicura che ci siano le tabelle
-    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
+    """Ingestor principale con logging migliorato."""
     init_db()
     folder = os.getenv("IMAP_FOLDER", "INBOX")
     since_days = int(os.getenv("IMAP_SEARCH_SINCE_DAYS", "7"))
@@ -165,18 +231,31 @@ def main():
     excel_writer = ExcelLeadWriter.from_env()
     notifier = EmailNotifier.from_env()
 
+    logger.info(
+        "Starting email ingestion",
+        extra={
+            "folder": folder,
+            "since_days": since_days,
+            "strategy": os.getenv("LEAD_CLASSIFIER_STRATEGY", "rule_based"),
+        }
+    )
+
     client = get_imap_client()
-    ## apre IMAP e cerca i messaggi recenti
+    processed_count = 0
+    lead_count = 0
+    skipped_count = 0
+    
     try:
         uids = search_since_days(client, folder, since_days)
         logger.info(
-            "Found %d messages since %d days",
-            len(uids),
-            since_days,
-            extra={"folder": folder},
+            "Found messages to process",
+            extra={
+                "folder": folder,
+                "message_count": len(uids),
+                "since_days": since_days,
+            }
         )
 
-        ## per ogni UID: estrae header e Message-ID -> controlla idempotenza ->estrae corpo e lo manda al parser
         for uid in uids:
             msg = fetch_message(client, uid)
             headers = extract_headers(msg)
@@ -191,10 +270,11 @@ def main():
 
             with SessionLocal() as db:
                 if _already_processed(db, msg_id, uid_str):
-                    logger.info(
-                        "Email already processed (runner pre-check)",
+                    logger.debug(
+                        "Email already processed",
                         extra={**log_context, "esito": "duplicate"},
                     )
+                    skipped_count += 1
                     continue
 
                 is_allowed, reason = allowed_sender(headers)
@@ -207,17 +287,30 @@ def main():
                         from_domain=from_domain,
                         reason=skip_reason,
                     )
+                    skipped_count += 1
                     continue
 
                 body = get_text_body(msg)
-                if not matches_lead_keywords(headers, body):
+                is_lead, score, confidence = matches_lead_keywords(headers, body)
+                
+                if not is_lead:
                     _mark_sender_disallowed(
                         db,
                         message_id=msg_id or None,
                         uid_str=uid_str,
                         from_domain=from_domain,
-                        reason="Missing lead keywords",
+                        reason=f"Missing lead keywords (score={score:.2f}, conf={confidence})",
                     )
+                    logger.debug(
+                        "Email rejected by lead classifier",
+                        extra={
+                            **log_context,
+                            "esito": "not_lead",
+                            "score": score,
+                            "confidence": confidence,
+                        }
+                    )
+                    skipped_count += 1
                     continue
 
                 received_at = parse_received_at(headers)
@@ -235,7 +328,9 @@ def main():
                     result_context["contact_id"] = contact_id
 
                 if result["status"] == "processed":
+                    processed_count += 1
                     if result.get("created"):
+                        lead_count += 1
                         lead_payload = {
                             "inserted_at": datetime.utcnow(),
                             "email": result["extracted"].get("email"),
@@ -257,20 +352,50 @@ def main():
                                     if isinstance(lead_payload.get("received_at"), datetime)
                                     else str(lead_payload.get("received_at") or ""),
                                 })
+                    
                     logger.info(
-                        "Email processed",
-                        extra={**result_context, "esito": "ingested"},
+                        "Email ingested successfully",
+                        extra={
+                            **result_context, 
+                            "esito": "ingested",
+                            "is_new": result.get("created", False),
+                            "lead_score": score,
+                            "confidence": confidence,
+                        },
                     )
                 else:
                     logger.info(
-                        "Email skipped by ingestion: %s",
-                        result.get("reason", "unknown"),
-                        extra={**result_context, "esito": "skipped"},
+                        "Email skipped by ingestion",
+                        extra={
+                            **result_context, 
+                            "esito": "skipped",
+                            "reason": result.get("reason", "unknown"),
+                        },
                     )
+                    skipped_count += 1
 
+    except Exception as exc:
+        logger.error(
+            "Ingestion failed with exception",
+            exc_info=True,
+            extra={"esito": "error"}
+        )
+        raise
     finally:
         with suppress(Exception):
             client.logout()
+        
+        # Summary metrics
+        logger.info(
+            "Ingestion completed",
+            extra={
+                "processed": processed_count,
+                "new_leads": lead_count,
+                "skipped": skipped_count,
+                "total": len(uids),
+            }
+        )
+
 
 if __name__ == "__main__":
     main()
