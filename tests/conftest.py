@@ -269,6 +269,7 @@ def _reload_modules():
 def session_factory(monkeypatch, tmp_path):
     db_path = tmp_path / "test.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    monkeypatch.setenv("INGESTOR_API_KEY", "test-key")
     _reload_modules()
     from libs.db import init_db, SessionLocal
 

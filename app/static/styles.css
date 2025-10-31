@@ -46,10 +46,22 @@ body {
   font-size: 0.95rem;
 }
 
+.muted {
+  color: var(--text-muted);
+}
+
 .hero-controls {
   display: flex;
+  gap: 1rem;
+  align-items: stretch;
+  flex-wrap: wrap;
+}
+
+.hero-actions {
+  display: flex;
+  flex-direction: column;
   gap: 0.75rem;
-  align-items: center;
+  align-items: flex-end;
 }
 
 button {
@@ -86,6 +98,73 @@ button.ghost {
   padding: 0.45rem 1rem;
 }
 
+button.small {
+  font-size: 0.85rem;
+  padding: 0.35rem 0.8rem;
+  border-radius: 8px;
+}
+
+input,
+select,
+textarea {
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  border-radius: 10px;
+  padding: 0.45rem 0.75rem;
+  color: var(--text);
+  font-size: 0.95rem;
+  font-family: inherit;
+  transition: border 0.2s ease, box-shadow 0.2s ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: rgba(56, 189, 248, 0.8);
+  box-shadow: 0 0 0 1px rgba(56, 189, 248, 0.35);
+}
+
+textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.api-key-card {
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 16px;
+  padding: 0.75rem 1rem;
+  max-width: 280px;
+}
+
+.api-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.api-key-form label {
+  color: var(--text-muted);
+  font-weight: 600;
+}
+
+.api-key-inputs {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.api-key-inputs input {
+  flex: 1;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
 .panel {
   background: var(--panel-bg);
   border: 1px solid var(--panel-border);
@@ -105,6 +184,11 @@ button.ghost {
 .panel-header h2 {
   margin: 0;
   font-size: 1.2rem;
+}
+
+.panel-subtitle {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
 }
 
 .summary {
@@ -248,10 +332,64 @@ button.ghost {
   font-size: 0.85rem;
 }
 
+.status-select {
+  width: 140px;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+
+.tag {
+  background: rgba(56, 189, 248, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: var(--accent);
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+}
+
+.tag-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.tag-form input {
+  min-width: 120px;
+}
+
+.note-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.note-form footer {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.table-empty {
+  text-align: center;
+  padding: 2rem 0;
+}
+
 @media (max-width: 768px) {
   .hero {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .hero-controls {
+    width: 100%;
+  }
+
+  .hero-actions {
+    width: 100%;
+    align-items: stretch;
   }
 
   button {

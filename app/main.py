@@ -3,19 +3,25 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import secrets
 from io import BytesIO
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List
+from typing import AsyncGenerator, Dict, List, Literal
 
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from libs.db import SessionLocal, init_db
 from libs.lead_storage import build_structured_workbook
-from libs.models import Contact
+from libs.models import Contact, ContactTag
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
 from libs.metrics import CONTENT_TYPE_LATEST, render_metrics
 
@@ -25,6 +31,62 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Email → CRM/Excel Ingestor")
 
 
+API_KEY_HEADER_NAME = "X-API-Key"
+DEFAULT_API_KEY = "local-dev-key"
+LeadState = Literal["new", "reviewed"]
+
+
+def _expected_api_key() -> str:
+    return (
+        os.getenv("INGESTOR_API_KEY")
+        or os.getenv("API_KEY")
+        or DEFAULT_API_KEY
+    )
+
+
+async def api_key_guard(
+    request: Request,
+    x_api_key: str | None = Header(None, alias=API_KEY_HEADER_NAME),
+) -> None:
+    expected = _expected_api_key()
+    if not expected:
+        return
+    provided = x_api_key or request.query_params.get("api_key")
+    if not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+        )
+
+
+class ContactUpdate(BaseModel):
+    status: LeadState | None = Field(default=None)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class TagCreate(BaseModel):
+    tag: str = Field(min_length=1, max_length=50)
+
+
+def serialize_contact(contact: Contact) -> Dict[str, object]:
+    return {
+        "id": contact.id,
+        "email": contact.email,
+        "first_name": contact.first_name,
+        "last_name": contact.last_name,
+        "phone": contact.phone,
+        "org": contact.org,
+        "source": contact.source,
+        "created_at": contact.created_at.isoformat(),
+        "last_message_subject": contact.last_message_subject,
+        "last_message_received_at": contact.last_message_received_at.isoformat()
+        if contact.last_message_received_at
+        else None,
+        "last_message_excerpt": contact.last_message_excerpt,
+        "status": contact.status,
+        "notes": contact.notes,
+        "tags": [tag.tag for tag in contact.tags],
+    }
 class MetricsEndpointMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         if request.url.path == "/metrics":
@@ -135,32 +197,72 @@ def health() -> Dict[str, str]:
 
 
 @app.get("/contacts")
-def list_contacts(limit: int = 100, offset: int = 0) -> List[Dict[str, object]]:
+async def list_contacts(
+    limit: int = 100,
+    offset: int = 0,
+    _: None = Depends(api_key_guard),
+) -> List[Dict[str, object]]:
     with SessionLocal() as db:
-        stmt = select(Contact).limit(limit).offset(offset)
+        stmt = (
+            select(Contact)
+            .options(selectinload(Contact.tags))
+            .limit(limit)
+            .offset(offset)
+        )
         rows = db.execute(stmt).scalars().all()
-        return [
-            {
-                "id": c.id,
-                "email": c.email,
-                "first_name": c.first_name,
-                "last_name": c.last_name,
-                "phone": c.phone,
-                "org": c.org,
-                "source": c.source,
-                "created_at": c.created_at.isoformat(),
-                "last_message_subject": c.last_message_subject,
-                "last_message_received_at": c.last_message_received_at.isoformat()
-                if c.last_message_received_at
-                else None,
-                "last_message_excerpt": c.last_message_excerpt,
-            }
-            for c in rows
-        ]
+        return [serialize_contact(contact) for contact in rows]
+
+
+def _get_contact(session: Session, contact_id: str) -> Contact:
+    contact = session.get(Contact, contact_id)
+    if contact is None:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    return contact
+
+
+@app.patch("/contacts/{contact_id}")
+async def update_contact(
+    contact_id: str,
+    payload: ContactUpdate,
+    _: None = Depends(api_key_guard),
+) -> Dict[str, object]:
+    with SessionLocal() as db:
+        contact = _get_contact(db, contact_id)
+        if payload.status is not None:
+            contact.status = payload.status
+        if payload.notes is not None:
+            notes = payload.notes.strip()
+            contact.notes = notes or None
+        db.add(contact)
+        db.commit()
+        db.refresh(contact)
+        return serialize_contact(contact)
+
+
+@app.post("/contacts/{contact_id}/tags")
+async def add_contact_tag(
+    contact_id: str,
+    payload: TagCreate,
+    _: None = Depends(api_key_guard),
+) -> Dict[str, object]:
+    tag_value = payload.tag.strip()
+    if not tag_value:
+        raise HTTPException(status_code=400, detail="Tag cannot be empty")
+
+    with SessionLocal() as db:
+        contact = _get_contact(db, contact_id)
+        normalized = tag_value
+        existing = {tag.tag.lower() for tag in contact.tags}
+        if normalized.lower() not in existing:
+            contact.tags.append(ContactTag(tag=normalized))
+            db.add(contact)
+            db.commit()
+            db.refresh(contact)
+        return serialize_contact(contact)
 
 
 @app.post("/ingestion/run")
-async def trigger_ingestion() -> Dict[str, str]:
+async def trigger_ingestion(_: None = Depends(api_key_guard)) -> Dict[str, str]:
     try:
         await events.start_run()
     except RuntimeError as exc:
@@ -169,7 +271,7 @@ async def trigger_ingestion() -> Dict[str, str]:
 
 
 @app.get("/ingestion/stream")
-async def ingestion_stream() -> StreamingResponse:
+async def ingestion_stream(_: None = Depends(api_key_guard)) -> StreamingResponse:
     queue = await events.subscribe()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -184,9 +286,13 @@ async def ingestion_stream() -> StreamingResponse:
 
 
 @app.get("/export/xlsx")
-def export_xlsx() -> StreamingResponse:
+async def export_xlsx(_: None = Depends(api_key_guard)) -> StreamingResponse:
     with SessionLocal() as db:
-        rows = db.execute(select(Contact)).scalars().all()
+        rows = (
+            db.execute(select(Contact).options(selectinload(Contact.tags)))
+            .scalars()
+            .all()
+        )
 
     headers = [
         "id",
@@ -197,6 +303,9 @@ def export_xlsx() -> StreamingResponse:
         "org",
         "source",
         "created_at",
+        "status",
+        "tags",
+        "notes",
         "last_message_subject",
         "last_message_received_at",
         "last_message_excerpt",
@@ -212,6 +321,9 @@ def export_xlsx() -> StreamingResponse:
             c.org,
             c.source,
             c.created_at,
+            c.status,
+            ", ".join(tag.tag for tag in c.tags),
+            c.notes,
             c.last_message_subject,
             c.last_message_received_at,
             c.last_message_excerpt,
