@@ -8,13 +8,18 @@ import os
 import random
 import re
 import shutil
+from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
-import joblib
-import numpy as np
+from libs.compat import joblib
+
+try:  # pragma: no cover - optional dependency
+    import numpy as np  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed in minimal environments
+    np = None  # type: ignore[assignment]
 
 
 try:
@@ -345,11 +350,28 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     return model
 
 
-def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int) -> Pipeline:
+class _NaivePipelineAdapter:
+    def __init__(self, model: dict, use_ngrams: bool, use_features: bool) -> None:
+        self._model = model
+        self._use_ngrams = use_ngrams
+        self._use_features = use_features
+
+    def predict_proba(self, texts: Sequence[str]) -> list[list[float]]:
+        results: list[list[float]] = []
+        for text in texts:
+            proba = _predict_proba(self._model, text, self._use_ngrams, self._use_features)
+            results.append([1.0 - proba, proba])
+        return results
+
+
+def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int):
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
-        raise RuntimeError(
-            "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+        logger.warning(
+            "scikit-learn is not available; falling back to a lightweight Naive Bayes pipeline"
         )
+        fallback_config = SimpleNamespace(use_ngrams=True, use_features=True)
+        model = _train_naive_bayes(train_set, fallback_config)  # type: ignore[arg-type]
+        return _NaivePipelineAdapter(model, True, True)
 
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
@@ -431,32 +453,142 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
     return pos_prob / total
 
 
+def _confusion_matrix(y_true: Sequence[int], y_pred: Sequence[int]) -> tuple[int, int, int, int]:
+    tp = fp = tn = fn = 0
+    for truth, pred in zip(y_true, y_pred):
+        if truth == 1 and pred == 1:
+            tp += 1
+        elif truth == 0 and pred == 1:
+            fp += 1
+        elif truth == 0 and pred == 0:
+            tn += 1
+        elif truth == 1 and pred == 0:
+            fn += 1
+    return tp, fp, tn, fn
+
+
+def _safe_auc(fpr: Sequence[float], tpr: Sequence[float]) -> float:
+    if len(fpr) < 2:
+        return 0.0
+    area = 0.0
+    for idx in range(1, len(fpr)):
+        width = fpr[idx] - fpr[idx - 1]
+        height = (tpr[idx] + tpr[idx - 1]) / 2
+        area += width * height
+    return max(0.0, min(1.0, area))
+
+
+def _fallback_roc_curve(
+    y_true: Sequence[int], y_scores: Sequence[float]
+) -> tuple[list[float], list[float], list[float]]:
+    pairs = sorted(zip(y_scores, y_true), key=lambda item: item[0], reverse=True)
+    thresholds: list[float] = []
+    tpr_values: list[float] = []
+    fpr_values: list[float] = []
+
+    positives = sum(1 for value in y_true if value == 1)
+    negatives = len(y_true) - positives
+    positives = max(positives, 1)
+    negatives = max(negatives, 1)
+
+    for idx, (score, _) in enumerate(pairs):
+        threshold = score
+        preds = [1 if value >= threshold else 0 for value, _ in pairs]
+        tp, fp, tn, fn = _confusion_matrix([label for _, label in pairs], preds)
+        tpr_values.append(tp / positives)
+        fpr_values.append(fp / negatives)
+        thresholds.append(threshold)
+
+    # ensure the curve reaches (0,0) and (1,1)
+    if thresholds:
+        thresholds.append(min(thresholds) - 1e-6)
+    else:
+        thresholds.append(0.0)
+    tpr_values.append(0.0)
+    fpr_values.append(0.0)
+
+    combined = sorted(zip(fpr_values, tpr_values, thresholds))
+    fpr_sorted = [item[0] for item in combined]
+    tpr_sorted = [item[1] for item in combined]
+    thresholds_sorted = [item[2] for item in combined]
+    return fpr_sorted, tpr_sorted, thresholds_sorted
+
+
+def _fallback_precision_recall(
+    y_true: Sequence[int], y_scores: Sequence[float]
+) -> tuple[list[float], list[float], list[float]]:
+    pairs = sorted(zip(y_scores, y_true), key=lambda item: item[0], reverse=True)
+    precisions: list[float] = []
+    recalls: list[float] = []
+    thresholds: list[float] = []
+
+    positives = sum(1 for value in y_true if value == 1)
+    positives = max(positives, 1)
+
+    tp = fp = 0
+    last_score = None
+    for score, truth in pairs:
+        if truth == 1:
+            tp += 1
+        else:
+            fp += 1
+        if score != last_score:
+            precision = tp / (tp + fp) if (tp + fp) else 1.0
+            recall = tp / positives
+            precisions.append(precision)
+            recalls.append(recall)
+            thresholds.append(score)
+            last_score = score
+
+    precisions.append(0.0)
+    recalls.append(0.0)
+    thresholds.append((thresholds[-1] if thresholds else 0.0) - 1e-6)
+
+    return precisions, recalls, thresholds
+
+
 def _compute_metrics_from_scores(
     y_true: Sequence[int], y_scores: Sequence[float], threshold: float = 0.5
 ) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
-    if precision_recall_curve is None or roc_curve is None or roc_auc_score is None:
-        raise RuntimeError(
-            "scikit-learn is required to compute evaluation metrics. Install scikit-learn first."
-        )
+    y_true_list = [int(value) for value in y_true]
+    y_scores_list = [float(value) for value in y_scores]
+    y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
 
-    y_true_array = np.asarray(y_true)
-    y_scores_array = np.asarray(y_scores)
-    y_pred = (y_scores_array >= threshold).astype(int)
+    tp, fp, tn, fn = _confusion_matrix(y_true_list, y_pred)
 
-    tp = int(((y_pred == 1) & (y_true_array == 1)).sum())
-    fp = int(((y_pred == 1) & (y_true_array == 0)).sum())
-    tn = int(((y_pred == 0) & (y_true_array == 0)).sum())
-    fn = int(((y_pred == 0) & (y_true_array == 1)).sum())
-
-    total = len(y_true_array)
+    total = len(y_true_list)
     accuracy = (tp + tn) / total if total else 0.0
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
 
-    fpr, tpr, roc_thresholds = roc_curve(y_true_array, y_scores_array)
-    roc_auc = roc_auc_score(y_true_array, y_scores_array)
-    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_array, y_scores_array)
+    if roc_curve is not None and roc_auc_score is not None:
+        fpr, tpr, roc_thresholds = roc_curve(y_true_list, y_scores_list)
+        roc_auc = float(roc_auc_score(y_true_list, y_scores_list))
+        roc_data = {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "thresholds": roc_thresholds.tolist(),
+        }
+    else:
+        fpr, tpr, roc_thresholds = _fallback_roc_curve(y_true_list, y_scores_list)
+        roc_auc = _safe_auc(fpr, tpr)
+        roc_data = {"fpr": fpr, "tpr": tpr, "thresholds": roc_thresholds}
+
+    if precision_recall_curve is not None:
+        pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_list, y_scores_list)
+        pr_data = {
+            "precision": pr_precision.tolist(),
+            "recall": pr_recall.tolist(),
+            "thresholds": pr_thresholds.tolist(),
+        }
+    else:
+        pr_precision, pr_recall, pr_thresholds = _fallback_precision_recall(y_true_list, y_scores_list)
+        pr_data = {
+            "precision": pr_precision,
+            "recall": pr_recall,
+            "thresholds": pr_thresholds,
+        }
 
     metrics = {
         "accuracy": accuracy,
@@ -468,16 +600,6 @@ def _compute_metrics_from_scores(
         "tn": tn,
         "fn": fn,
         "roc_auc": roc_auc,
-    }
-    roc_data = {
-        "fpr": fpr.tolist(),
-        "tpr": tpr.tolist(),
-        "thresholds": roc_thresholds.tolist(),
-    }
-    pr_data = {
-        "precision": pr_precision.tolist(),
-        "recall": pr_recall.tolist(),
-        "thresholds": pr_thresholds.tolist(),
     }
     return metrics, roc_data, pr_data
 
@@ -579,7 +701,8 @@ def train(config: TrainingConfig) -> None:
 
         texts_test = [_prepare_text(record) for record in test_set]
         y_true = [int(record.get("label", 0)) for record in test_set]
-        y_scores = pipeline.predict_proba(texts_test)[:, 1].tolist()
+        probabilities = pipeline.predict_proba(texts_test)
+        y_scores = [row[1] for row in probabilities]
 
         metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores)
         logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())

@@ -4,7 +4,13 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, Tuple
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, generate_latest
+from libs.compat import prometheus_client
+
+CONTENT_TYPE_LATEST = prometheus_client.CONTENT_TYPE_LATEST
+CollectorRegistry = prometheus_client.CollectorRegistry
+Counter = prometheus_client.Counter
+Gauge = prometheus_client.Gauge
+generate_latest = prometheus_client.generate_latest
 
 _REGISTRY = CollectorRegistry(auto_describe=True)
 

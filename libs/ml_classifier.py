@@ -10,7 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Optional
 
-import joblib
+from libs.compat import joblib
 
 
 logger = logging.getLogger(__name__)
