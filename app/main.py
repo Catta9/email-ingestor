@@ -7,20 +7,33 @@ from io import BytesIO
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import select
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from libs.db import SessionLocal, init_db
 from libs.lead_storage import build_structured_workbook
 from libs.models import Contact
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
+from libs.metrics import CONTENT_TYPE_LATEST, render_metrics
 
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Email → CRM/Excel Ingestor")
+
+
+class MetricsEndpointMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):  # type: ignore[override]
+        if request.url.path == "/metrics":
+            body = render_metrics()
+            return Response(content=body, media_type=CONTENT_TYPE_LATEST)
+        return await call_next(request)
+
+
+app.add_middleware(MetricsEndpointMiddleware)
 
 
 class EventBroadcaster:
