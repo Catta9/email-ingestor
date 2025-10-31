@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Dashboard Ingestione Email</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <header class="hero">
+        <div>
+          <h1>Email → CRM Dashboard</h1>
+          <p class="subtitle">
+            Avvia l'ingestione e segui in tempo reale i lead rilevati.
+          </p>
+        </div>
+        <div class="hero-controls">
+          <button id="start-btn" class="primary">Avvia tool</button>
+          <span id="status-badge" class="status status-idle" data-state="idle">In attesa</span>
+        </div>
+      </header>
+
+      <section class="panel" aria-labelledby="summary-title">
+        <div class="panel-header">
+          <h2 id="summary-title">Stato</h2>
+        </div>
+        <div id="summary" class="summary">Nessuna esecuzione recente.</div>
+      </section>
+
+      <section class="panel" aria-labelledby="log-title">
+        <div class="panel-header">
+          <h2 id="log-title">Log</h2>
+        </div>
+        <ul id="log-list" class="log-list" aria-live="polite"></ul>
+      </section>
+
+      <section class="panel" aria-labelledby="contacts-title">
+        <div class="panel-header">
+          <h2 id="contacts-title">Clienti e richieste</h2>
+          <button id="refresh-btn" class="ghost" type="button">Aggiorna</button>
+        </div>
+        <div class="table-wrapper">
+          <table id="contacts-table">
+            <thead>
+              <tr>
+                <th>Nome</th>
+                <th>Email</th>
+                <th>Azienda</th>
+                <th>Telefono</th>
+                <th>Ultimo messaggio</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+    <script src="/static/app.js" defer></script>
+  </body>
+</html>
