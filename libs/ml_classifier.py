@@ -21,12 +21,12 @@ EXTENDED_STOPWORDS = {
     "cosa", "cui", "da", "dal", "dalla", "dalle", "dallo", "degli", "dei", "del", "della",
     "delle", "dello", "di", "dove", "e", "ed", "essere", "gli", "ha", "hai", "hanno", "ho",
     "i", "il", "in", "io", "la", "le", "lei", "li", "lo", "loro", "lui", "ma", "me", "mi",
-    "mio", "nel", "nella", "nelle", "nello", "noi", "non", "nostro", "o", "per", "però",
+    "mia", "mio", "nel", "nella", "nelle", "nello", "noi", "non", "nostro", "o", "per", "però",
     "più", "quale", "quando", "quei", "quelle", "quelli", "quello", "questo", "questi",
     "qui", "se", "sei", "si", "sia", "siamo", "siete", "sono", "sopra", "sotto", "sta",
     "stato", "su", "sua", "sue", "sui", "sul", "sulla", "sulle", "sullo", "suo", "suoi",
     "ti", "tra", "tu", "tua", "tue", "tuo", "tuoi", "tutto", "un", "una", "uno", "va",
-    "vai", "voi", "vostro",
+    "vai", "voi", "vorrei", "vostro",
     # English
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any",
     "are", "aren't", "as", "at", "be", "because", "been", "before", "being", "below",
@@ -88,10 +88,14 @@ def _extract_features(text: str, headers: dict[str, str]) -> dict[str, float]:
     # Pattern firma (più righe con nome/ruolo/telefono)
     signature_indicators = ['tel', 'phone', 'mobile', 'cell', 'email', '@']
     lines = text.split('\n')
-    signature_score = sum(
-        1 for line in lines[-5:]  # ultime 5 righe
+    recent_window = [line for line in lines[-5:] if line.strip()]
+    window = recent_window or lines[-5:]
+    window_size = max(len(window), 1)
+    signature_matches = sum(
+        1 for line in window
         if any(ind in line.lower() for ind in signature_indicators)
-    ) / 5.0
+    )
+    signature_score = signature_matches / window_size
     
     return {
         'urgency_score': min(urgency_count / 3.0, 1.0),  # normalizza

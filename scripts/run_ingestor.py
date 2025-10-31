@@ -144,37 +144,55 @@ def _use_hybrid_strategy() -> bool:
     return strategy == "hybrid"
 
 
-def matches_lead_keywords(headers: dict[str, str], body: str) -> tuple[bool, float, str]:
+def matches_lead_keywords(
+    headers: dict[str, str],
+    body: str,
+    *,
+    return_details: bool = False,
+) -> bool | tuple[bool, float, str]:
     """
     Verifica se l'email è un lead.
     
     Returns:
-        (is_lead, score, confidence)
+        Se ``return_details`` è ``True`` restituisce ``(is_lead, score, confidence)``.
+        Altrimenti restituisce solo ``is_lead``.
     """
+    global _ML_AVAILABLE
     classifier = _get_ml_classifier() if _use_ml_strategy() else None
-    
+    score: float = 0.0
+    confidence = "rule_based"
+
     if classifier is not None:
-        score, confidence = classifier.score_with_confidence(headers, body)
+        try:
+            score, confidence = classifier.score_with_confidence(headers, body)
+        except ModelNotAvailableError as exc:
+            logger.warning("ML classifier unavailable during scoring: %s", exc)
+            classifier = None
+            _ML_AVAILABLE = False
+
+    if classifier is not None:
         is_lead = score >= classifier.config.threshold
-        
-        if is_lead:
-            return True, score, confidence
-        
-        # Hybrid fallback
-        if _use_hybrid_strategy():
+        method_confidence = confidence
+
+        if not is_lead and _use_hybrid_strategy():
             scorer = _get_rule_based_scorer()
             rule_score = scorer.score(headers, body)
             rule_is_lead = scorer.is_relevant(headers, body)
             if rule_is_lead:
-                return True, rule_score, "rule_fallback"
-        
-        return False, score, confidence
-    
-    # Rule-based only
+                score = rule_score
+                method_confidence = "rule_fallback"
+                is_lead = True
+
+        if return_details:
+            return is_lead, score, method_confidence
+        return is_lead
+
     scorer = _get_rule_based_scorer()
     score = scorer.score(headers, body)
     is_lead = scorer.is_relevant(headers, body)
-    return is_lead, score, "rule_based"
+    if return_details:
+        return is_lead, score, "rule_based"
+    return is_lead
 
 
 def _already_processed(db, message_id: str | None, uid_str: str | None) -> bool:
@@ -291,7 +309,11 @@ def main():
                     continue
 
                 body = get_text_body(msg)
-                is_lead, score, confidence = matches_lead_keywords(headers, body)
+                is_lead, score, confidence = matches_lead_keywords(
+                    headers,
+                    body,
+                    return_details=True,
+                )
                 
                 if not is_lead:
                     _mark_sender_disallowed(
