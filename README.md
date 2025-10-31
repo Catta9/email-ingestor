@@ -94,6 +94,7 @@ SMTP_PORT=587
 SMTP_USERNAME=tuoindirizzo@gmail.com
 SMTP_PASSWORD=app_password_gmail
 SMTP_FROM="Email Ingestor <tuoindirizzo@gmail.com>"
+# (Opzionale) SMTP_SENDER=...  # fallback legacy se SMTP_FROM non è impostata
 NOTIFY_RECIPIENTS=me@azienda.it, collega@azienda.it
 ```
 

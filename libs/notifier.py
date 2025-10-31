@@ -29,7 +29,9 @@ class EmailNotifier:
     @classmethod
     def from_env(cls) -> "EmailNotifier | None":
         host = os.getenv("SMTP_HOST")
-        sender = os.getenv("SMTP_SENDER")
+        sender = os.getenv("SMTP_FROM") or os.getenv("SMTP_SENDER")
+        if sender:
+            sender = sender.strip()
         recipients = _parse_recipients(os.getenv("NOTIFY_RECIPIENTS"))
         if not (host and sender and recipients):
             return None
