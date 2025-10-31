@@ -33,6 +33,18 @@ class DummySMTP:
         self.messages.append(message)
 
 
+def test_from_env_prefers_smtp_from(monkeypatch):
+    monkeypatch.setenv("SMTP_HOST", "smtp.test")
+    monkeypatch.setenv("SMTP_FROM", "Notifier <notify@test>")
+    monkeypatch.delenv("SMTP_SENDER", raising=False)
+    monkeypatch.setenv("NOTIFY_RECIPIENTS", "ops@test")
+
+    notifier = EmailNotifier.from_env()
+
+    assert notifier is not None
+    assert notifier.sender == "Notifier <notify@test>"
+
+
 def test_send_new_lead_prefers_org_over_company(monkeypatch):
     sent_messages: list[EmailMessage] = []
 
