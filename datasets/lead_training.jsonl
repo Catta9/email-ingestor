@@ -91,3 +91,19 @@
 {"label": 0, "subject": "Recap team vendite", "body": "Team marketing ha già inviato l'offerta, questa email è solo un promemoria interno."}
 {"label": 0, "subject": "Newsletter partner: nuove tariffe", "body": "Ti informiamo sulle nuove tariffe disponibili, non richiediamo preventivi."}
 {"label": 0, "subject": "Avviso consegna pacco", "body": "Il corriere consegnerà il tuo pacco domani tra le 9 e le 13."}
+{"label": 1, "subject": "Richiesta offerta audit cybersecurity", "body": "Ci servirebbe un preventivo dettagliato per un audit di sicurezza informatica sui nostri server e reti aziendali entro fine mese."}
+{"label": 1, "subject": "Demande de devis pour formation UX", "body": "Bonjour, pourriez-vous nous envoyer une proposition tarifaire pour un atelier UX de deux jours à Paris?"}
+{"label": 1, "subject": "Preventivo noleggio attrezzature audio", "body": "Stiamo organizzando un roadshow e abbiamo bisogno di conoscere costi e disponibilità per microfoni, mixer e tecnici per 5 date."}
+{"label": 1, "subject": "Request proposal: data warehouse modernization", "body": "Please share a statement of work with pricing options for modernizing our data warehouse on Snowflake."}
+{"label": 1, "subject": "Solicitud cotización soporte servidores", "body": "Necesitamos una propuesta de mantenimiento 24/7 para seis servidores Linux incluyendo SLA detallado."}
+{"label": 1, "subject": "Preventivo consulenza ESG", "body": "Vorremmo ricevere una stima di costi per un progetto di consulenza ESG di sei mesi con deliverable trimestrali."}
+{"label": 1, "subject": "Quote request for 3D printed prototypes", "body": "Can you send pricing for producing 30 ABS prototypes based on the attached CAD files?"}
+{"label": 1, "subject": "Preventivo servizio customer care multilingua", "body": "Ci occorre un'offerta per un servizio di customer care in italiano, inglese e tedesco attivo 7/7."}
+{"label": 0, "subject": "Aggiornamento stato ticket", "body": "Il ticket #554 è passato in lavorazione, non sono richieste azioni."}
+{"label": 0, "subject": "Newsletter fintech weekly", "body": "Le ultime notizie dal mondo fintech e gli eventi consigliati della settimana."}
+{"label": 0, "subject": "Promemoria consegna documenti", "body": "Ricordiamo di caricare i documenti sul portale entro venerdì."}
+{"label": 0, "subject": "Benvenuto nuovo dipendente", "body": "Siamo felici di darti il benvenuto nel team, qui trovi il kit informativo."}
+{"label": 0, "subject": "Avviso phishing", "body": "Ignorare eventuali email che richiedono il reset della password, sono tentativi di phishing."}
+{"label": 0, "subject": "Invito webinar prodotto", "body": "Iscriviti al webinar gratuito sulla nuova release della piattaforma."}
+{"label": 0, "subject": "Promozione abbonamento annuale", "body": "Solo fino a domenica puoi rinnovare l'abbonamento con il 30% di sconto."}
+{"label": 0, "subject": "Riepilogo spese marketing", "body": "In allegato il report di spesa già approvato, nessun nuovo preventivo richiesto."}
