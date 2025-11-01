@@ -7,20 +7,18 @@ import json
 import logging
 from io import BytesIO
 from pathlib import Path
-from typing import AsyncGenerator, Dict, List, Literal
+from typing import AsyncGenerator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from dotenv import load_dotenv
 from libs.db import SessionLocal, init_db
 from libs.lead_storage import build_structured_workbook
-from libs.models import Contact, ContactTag
+from libs.models import Contact
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
 from libs.metrics import CONTENT_TYPE_LATEST, render_metrics
 
@@ -32,23 +30,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Email → CRM/Excel Ingestor")
 
 
-LeadState = Literal["new", "reviewed"]
-
-
-class ContactUpdate(BaseModel):
-    """Payload ammesso per aggiornare lo stato o le note di un contatto."""
-
-    status: LeadState | None = Field(default=None)
-    notes: str | None = Field(default=None, max_length=2000)
-
-
-class TagCreate(BaseModel):
-    """Payload per aggiungere un nuovo tag al contatto."""
-
-    tag: str = Field(min_length=1, max_length=50)
-
-
-def serialize_contact(contact: Contact) -> Dict[str, object]:
+def serialize_contact(contact: Contact) -> dict[str, object]:
     """Trasforma il modello ORM in un dizionario serializzabile JSON."""
 
     return {
@@ -59,16 +41,15 @@ def serialize_contact(contact: Contact) -> Dict[str, object]:
         "phone": contact.phone,
         "org": contact.org,
         "source": contact.source,
+        "consent": contact.consent,
         "created_at": contact.created_at.isoformat(),
         "last_message_subject": contact.last_message_subject,
         "last_message_received_at": contact.last_message_received_at.isoformat()
         if contact.last_message_received_at
         else None,
         "last_message_excerpt": contact.last_message_excerpt,
-        "status": contact.status,
-        "notes": contact.notes,
-        "tags": [tag.tag for tag in contact.tags],
     }
+
 class MetricsEndpointMiddleware(BaseHTTPMiddleware):
     """Espone `/metrics` senza coinvolgere il router principale."""
 
@@ -190,7 +171,7 @@ async def index() -> FileResponse:
 
 
 @app.get("/health")
-def health() -> Dict[str, str]:
+def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
@@ -198,66 +179,15 @@ def health() -> Dict[str, str]:
 async def list_contacts(
     limit: int = 100,
     offset: int = 0,
-) -> List[Dict[str, object]]:
+) -> list[dict[str, object]]:
     with SessionLocal() as db:
-        stmt = (
-            select(Contact)
-            .options(selectinload(Contact.tags))
-            .limit(limit)
-            .offset(offset)
-        )
+        stmt = select(Contact).limit(limit).offset(offset)
         rows = db.execute(stmt).scalars().all()
         return [serialize_contact(contact) for contact in rows]
 
 
-def _get_contact(session: Session, contact_id: str) -> Contact:
-    contact = session.get(Contact, contact_id)
-    if contact is None:
-        raise HTTPException(status_code=404, detail="Contact not found")
-    return contact
-
-
-@app.patch("/contacts/{contact_id}")
-async def update_contact(
-    contact_id: str,
-    payload: ContactUpdate,
-) -> Dict[str, object]:
-    with SessionLocal() as db:
-        contact = _get_contact(db, contact_id)
-        if payload.status is not None:
-            contact.status = payload.status
-        if payload.notes is not None:
-            notes = payload.notes.strip()
-            contact.notes = notes or None
-        db.add(contact)
-        db.commit()
-        db.refresh(contact)
-        return serialize_contact(contact)
-
-
-@app.post("/contacts/{contact_id}/tags")
-async def add_contact_tag(
-    contact_id: str,
-    payload: TagCreate,
-) -> Dict[str, object]:
-    tag_value = payload.tag.strip()
-    if not tag_value:
-        raise HTTPException(status_code=400, detail="Tag cannot be empty")
-
-    with SessionLocal() as db:
-        contact = _get_contact(db, contact_id)
-        normalized = tag_value
-        existing = {tag.tag.lower() for tag in contact.tags}
-        if normalized.lower() not in existing:
-            contact.tags.append(ContactTag(tag=normalized))
-            db.add(contact)
-            db.commit()
-            db.refresh(contact)
-        return serialize_contact(contact)
-
-
 @app.post("/ingestion/run")
-async def trigger_ingestion() -> Dict[str, str]:
+async def trigger_ingestion() -> dict[str, str]:
     """Avvia l'ingestione manualmente restituendo lo stato avvio."""
 
     try:
@@ -289,11 +219,7 @@ async def export_xlsx() -> StreamingResponse:
     """Genera e restituisce l'export Excel aggiornato del database."""
 
     with SessionLocal() as db:
-        rows = (
-            db.execute(select(Contact).options(selectinload(Contact.tags)))
-            .scalars()
-            .all()
-        )
+        rows = db.execute(select(Contact)).scalars().all()
 
     headers = [
         "id",
@@ -303,10 +229,8 @@ async def export_xlsx() -> StreamingResponse:
         "phone",
         "org",
         "source",
+        "consent",
         "created_at",
-        "status",
-        "tags",
-        "notes",
         "last_message_subject",
         "last_message_received_at",
         "last_message_excerpt",
@@ -321,10 +245,8 @@ async def export_xlsx() -> StreamingResponse:
             c.phone,
             c.org,
             c.source,
+            c.consent,
             c.created_at,
-            c.status,
-            ", ".join(tag.tag for tag in c.tags),
-            c.notes,
             c.last_message_subject,
             c.last_message_received_at,
             c.last_message_excerpt,
