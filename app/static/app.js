@@ -6,11 +6,61 @@ const contactsBody = document.querySelector("#contacts-table tbody");
 const summaryBox = document.getElementById("summary");
 const contactsMeta = document.getElementById("contacts-meta");
 const contactsColumnCount = document.querySelectorAll("#contacts-table thead th").length;
+const folderLabel = document.getElementById("imap-folder");
+const exportBtn = document.getElementById("export-btn");
+const statTotal = document.getElementById("stat-total");
+const statProcessed = document.getElementById("stat-processed");
+const statLeads = document.getElementById("stat-leads");
+const statSkipped = document.getElementById("stat-skipped");
 
 const MAX_LOG_ITEMS = 120;
 const STATUS_LABELS = { new: "Nuovo", reviewed: "In revisione" };
+const LEVEL_ICONS = {
+  info: "ℹ️",
+  success: "✅",
+  warning: "⚠️",
+  error: "❌",
+};
 
 let eventSource = null;
+// Stato aggregato mostrato nel riepilogo rapido.
+const statsState = {
+  total: 0,
+  processed: 0,
+  leads: 0,
+  skipped: 0,
+};
+
+// Aggiorna il DOM con i valori correnti del riepilogo.
+function renderStats() {
+  statTotal.textContent = statsState.total;
+  statProcessed.textContent = statsState.processed;
+  statLeads.textContent = statsState.leads;
+  statSkipped.textContent = statsState.skipped;
+}
+
+function setStats(partial = {}) {
+  let updated = false;
+  Object.entries(partial).forEach(([key, value]) => {
+    if (value === undefined || value === null || Number.isNaN(value)) {
+      return;
+    }
+    if (statsState[key] !== value) {
+      statsState[key] = value;
+      updated = true;
+    }
+  });
+  if (updated) {
+    renderStats();
+  }
+}
+
+function incrementStat(key) {
+  if (Object.prototype.hasOwnProperty.call(statsState, key)) {
+    statsState[key] += 1;
+    renderStats();
+  }
+}
 
 function timestamp() {
   return new Date().toLocaleTimeString([], {
@@ -30,12 +80,18 @@ function setStatus(state, message) {
 function appendLog(message, level = "info") {
   const item = document.createElement("li");
   item.className = `log-item ${level}`;
+  const icon = document.createElement("span");
+  icon.className = "icon";
+  icon.textContent = LEVEL_ICONS[level] || "•";
+  item.appendChild(icon);
+  const body = document.createElement("div");
   const time = document.createElement("time");
   time.textContent = timestamp();
-  item.appendChild(time);
   const content = document.createElement("div");
   content.textContent = message;
-  item.appendChild(content);
+  body.appendChild(time);
+  body.appendChild(content);
+  item.appendChild(body);
   logList.prepend(item);
 
   while (logList.children.length > MAX_LOG_ITEMS) {
@@ -363,6 +419,10 @@ function handleEvent(event) {
     case "run_started": {
       appendLog(message, "info");
       summaryBox.textContent = "Ingestione avviata...";
+      if (folderLabel && data.folder) {
+        folderLabel.textContent = data.folder;
+      }
+      setStats({ total: data.total ?? 0, processed: 0, leads: 0, skipped: 0 });
       break;
     }
     case "run_progress": {
@@ -371,19 +431,23 @@ function handleEvent(event) {
       const leads = data.leads ?? 0;
       const total = data.total ?? 0;
       summaryBox.textContent = `Elaborate ${processed}/${total} email • Lead nuovi: ${leads} • Saltate: ${skipped}`;
+      setStats({ total, processed, leads, skipped });
       break;
     }
     case "lead_created": {
       appendLog(`${message} (UID ${data.imap_uid || "?"})`, "success");
+      incrementStat("leads");
       loadContacts({ quiet: true });
       break;
     }
     case "email_processed": {
       appendLog(message, "info");
+      incrementStat("processed");
       break;
     }
     case "email_skipped": {
       appendLog(`${message} (${data.reason || "motivo sconosciuto"})`, "warning");
+      incrementStat("skipped");
       break;
     }
     case "run_completed": {
@@ -396,6 +460,7 @@ function handleEvent(event) {
         "success",
       );
       summaryBox.textContent = `Ultima esecuzione: ${processed}/${total} email, nuovi lead ${leads}, saltate ${skipped}`;
+      setStats({ total, processed, leads, skipped });
       loadContacts({ quiet: true });
       break;
     }
@@ -434,8 +499,12 @@ async function triggerIngestion() {
 
 startBtn.addEventListener("click", triggerIngestion);
 refreshBtn.addEventListener("click", () => loadContacts());
+exportBtn.addEventListener("click", () => {
+  appendLog("Esportazione Excel avviata", "info");
+});
 
 window.addEventListener("beforeunload", ensureEventStreamClosed);
 
+renderStats();
 connectEventStream();
 loadContacts();

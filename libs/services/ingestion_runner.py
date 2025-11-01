@@ -1,3 +1,5 @@
+"""Motore di ingestione IMAP con eventi strutturati e log arricchiti."""
+
 from __future__ import annotations
 
 import logging
@@ -9,6 +11,7 @@ from email.utils import parseaddr, parsedate_to_datetime
 from typing import Any, Callable, Dict, Iterable, List
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from libs.db import SessionLocal, init_db
 from libs.email_utils import (
@@ -36,11 +39,13 @@ logger = logging.getLogger(__name__)
 
 
 class IngestionEvent(Dict[str, Any]):
-    """Simple mapping describing an ingestion lifecycle event."""
+    """Mappa con i dati pubblicati durante il ciclo di ingestione."""
 
 
 @dataclass
 class IngestionStats:
+    """Contatore aggregato dei risultati di una run di ingestione."""
+
     processed_count: int = 0
     lead_count: int = 0
     skipped_count: int = 0
@@ -48,7 +53,7 @@ class IngestionStats:
 
 
 class IngestionRunner:
-    """Reusable ingestion runner that emits structured events."""
+    """Coordinatore riutilizzabile che esegue l'ingestione e produce eventi."""
 
     def __init__(self) -> None:
         self._rule_based_scorer: LeadRelevanceScorer | None = None
@@ -59,12 +64,14 @@ class IngestionRunner:
     # Public API
     # ------------------------------------------------------------------
     def run(self, event_callback: Callable[[IngestionEvent], None] | None = None) -> IngestionStats:
-        """Run the ingestion and emit events through ``event_callback``."""
+        """Avvia l'ingestione ed emette eventi verso ``event_callback``."""
 
         if event_callback is None:
             event_callback = lambda event: None
 
         def emit(event_type: str, message: str, **data: Any) -> None:
+            """Helper interno per costruire eventi SSE coerenti."""
+
             payload: IngestionEvent = {"type": event_type, "message": message}
             payload_data = dict(data) if data else {}
             payload_data.setdefault("folder", folder)
@@ -92,7 +99,7 @@ class IngestionRunner:
             since_days=since_days,
         )
         logger.info(
-            "Starting email ingestion",
+            "Avvio ingestione email",
             extra={
                 "folder": folder,
                 "since_days": since_days,
@@ -134,7 +141,7 @@ class IngestionRunner:
                                 **log_context,
                             )
                             logger.debug(
-                                "Email already processed",
+                                "Email già segnalata come elaborata",
                                 extra={**log_context, "esito": "duplicate"},
                             )
                             continue
@@ -185,7 +192,7 @@ class IngestionRunner:
                                 **log_context,
                             )
                             logger.debug(
-                                "Email rejected by lead classifier",
+                                "Email scartata dal classificatore lead",
                                 extra={
                                     **log_context,
                                     "esito": "not_lead",
@@ -268,7 +275,7 @@ class IngestionRunner:
                                 **result_context,
                             )
                             logger.info(
-                                "Email ingested successfully",
+                                "Email ingerita con successo",
                                 extra={
                                     **result_context,
                                     "esito": "ingested",
@@ -287,7 +294,7 @@ class IngestionRunner:
                                 **result_context,
                             )
                             logger.info(
-                                "Email skipped by ingestion",
+                                "Email saltata dal processo di ingestione",
                                 extra={
                                     **result_context,
                                     "esito": "skipped",
@@ -310,7 +317,7 @@ class IngestionRunner:
         except Exception as exc:  # pragma: no cover - defensive
             record_ingestion_error(folder=folder, domain="run")
             logger.error(
-                "Ingestion failed with exception",
+                "Ingestione fallita con eccezione",
                 exc_info=True,
                 extra={"esito": "error", "folder": folder},
             )
@@ -332,7 +339,7 @@ class IngestionRunner:
                 total=stats.total,
             )
             logger.info(
-                "Ingestion completed",
+                "Ingestione completata",
                 extra={
                     "processed": stats.processed_count,
                     "new_leads": stats.lead_count,
@@ -348,6 +355,8 @@ class IngestionRunner:
     # ------------------------------------------------------------------
     @staticmethod
     def _allowed_sender(headers: Dict[str, str]) -> tuple[bool, str | None]:
+        """Controlla se il dominio del mittente è consentito."""
+
         raw_from = headers.get("From") or ""
         _, email_address = parseaddr(raw_from)
         email_address = email_address.strip()
@@ -369,6 +378,8 @@ class IngestionRunner:
 
     @staticmethod
     def _parse_received_at(headers: Dict[str, str]) -> datetime | None:
+        """Prova a interpretare la data di ricezione dai principali header."""
+
         raw_date = headers.get("Date") or headers.get("date")
         if not raw_date:
             return None
@@ -377,7 +388,9 @@ class IngestionRunner:
         except Exception:
             return None
 
-    def _already_processed(self, db, message_id: str | None, uid_str: str | None) -> bool:
+    def _already_processed(self, db: Session, message_id: str | None, uid_str: str | None) -> bool:
+        """Controlla se un messaggio è già stato segnato come processato."""
+
         if message_id:
             processed = (
                 db.execute(
@@ -398,16 +411,18 @@ class IngestionRunner:
 
     def _mark_sender_disallowed(
         self,
-        db,
+        db: Session,
         *,
         message_id: str | None,
         uid_str: str | None,
         from_domain: str | None,
         reason: str,
     ) -> None:
+        """Registra il messaggio come escluso e lo logga con contesto."""
+
         identifier = message_id or uid_str
         logger.info(
-            "Skipping email due to sender restrictions: %s",
+            "Email esclusa per restrizioni sul mittente: %s",
             reason,
             extra={
                 "imap_uid": uid_str,
@@ -426,7 +441,7 @@ class IngestionRunner:
     # ------------------------------------------------------------------
     @staticmethod
     def _parse_since_days(raw_value: str | None, *, default: int = 7) -> int:
-        """Validate the IMAP look-back window expressed in days."""
+        """Valida la finestra di ricerca IMAP espressa in giorni."""
 
         if raw_value is None:
             return default
@@ -456,11 +471,15 @@ class IngestionRunner:
         return value
 
     def _get_rule_based_scorer(self) -> LeadRelevanceScorer:
+        """Restituisce (con caching) lo scorer rule-based configurato."""
+
         if self._rule_based_scorer is None:
             self._rule_based_scorer = LeadRelevanceScorer.from_env()
         return self._rule_based_scorer
 
     def _get_ml_classifier(self) -> LeadMLClassifier | None:
+        """Restituisce il classificatore ML se disponibile e configurato."""
+
         if not self._ml_available:
             return None
         if self._ml_classifier is None:
@@ -473,10 +492,14 @@ class IngestionRunner:
         return self._ml_classifier
 
     def _use_ml_strategy(self) -> bool:
+        """Indica se la strategia corrente richiede il modello ML."""
+
         strategy = os.getenv("LEAD_CLASSIFIER_STRATEGY", "rule_based").strip().lower()
         return strategy == "ml" or strategy == "hybrid"
 
     def _use_hybrid_strategy(self) -> bool:
+        """Indica se occorre combinare ML e regole tradizionali."""
+
         strategy = os.getenv("LEAD_CLASSIFIER_STRATEGY", "rule_based").strip().lower()
         return strategy == "hybrid"
 
@@ -485,6 +508,8 @@ class IngestionRunner:
         headers: Dict[str, str],
         body: str,
     ) -> tuple[bool, float, str]:
+        """Calcola il punteggio lead usando ML/regole in base alla strategia."""
+
         classifier = self._get_ml_classifier() if self._use_ml_strategy() else None
         score: float = 0.0
         confidence = "rule_based"

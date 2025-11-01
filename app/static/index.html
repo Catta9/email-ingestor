@@ -12,7 +12,7 @@
         <div>
           <h1>Email → CRM Dashboard</h1>
           <p class="subtitle">
-            Avvia l'ingestione e segui in tempo reale i lead rilevati.
+            Avvia l'ingestione, monitora i lead e scarica subito l'export operativo.
           </p>
         </div>
         <div class="hero-controls">
@@ -20,13 +20,19 @@
             <div class="api-key-form">
               <label>Accesso IMAP</label>
               <p class="hint">
-                Email e password sono lette dal file
-                <code>.env</code> (<code>IMAP_USERNAME</code> / <code>IMAP_PASSWORD</code>).
+                Credenziali lette dal file <code>.env</code>
+                (<code>IMAP_USERNAME</code> / <code>IMAP_PASSWORD</code>).
+              </p>
+              <p class="hint">
+                Cartella monitorata: <code id="imap-folder">INBOX</code>
               </p>
             </div>
           </div>
           <div class="hero-actions">
-            <button id="start-btn" class="primary">Avvia tool</button>
+            <button id="start-btn" class="primary">Avvia ingestione</button>
+            <a id="export-btn" class="ghost" href="/export/xlsx" target="_blank" rel="noopener">
+              Scarica Excel
+            </a>
             <span id="status-badge" class="status status-idle" data-state="idle">In attesa</span>
           </div>
         </div>
@@ -37,6 +43,34 @@
           <h2 id="summary-title">Stato</h2>
         </div>
         <div id="summary" class="summary">Nessuna esecuzione recente.</div>
+      </section>
+
+      <section class="panel" aria-labelledby="overview-title">
+        <div class="panel-header">
+          <h2 id="overview-title">Indicatori principali</h2>
+        </div>
+        <div class="stats-grid" role="list">
+          <article class="stat-card" role="listitem">
+            <span class="stat-label">Email individuate</span>
+            <span class="stat-value" id="stat-total">0</span>
+            <span class="stat-foot">Ultima scansione</span>
+          </article>
+          <article class="stat-card" role="listitem">
+            <span class="stat-label">Email elaborate</span>
+            <span class="stat-value" id="stat-processed">0</span>
+            <span class="stat-foot">Contatti aggiornati</span>
+          </article>
+          <article class="stat-card" role="listitem">
+            <span class="stat-label">Nuovi lead</span>
+            <span class="stat-value" id="stat-leads">0</span>
+            <span class="stat-foot">Creati in Excel/DB</span>
+          </article>
+          <article class="stat-card" role="listitem">
+            <span class="stat-label">Email saltate</span>
+            <span class="stat-value" id="stat-skipped">0</span>
+            <span class="stat-foot">Duplicati o non rilevanti</span>
+          </article>
+        </div>
       </section>
 
       <section class="panel" aria-labelledby="log-title">
