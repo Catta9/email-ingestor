@@ -210,19 +210,12 @@ Esempio di schermata con lead aggiornati:
 uvicorn app.main:app --reload
 ```
 
-## Migrazioni database
-Il nuovo schema introduce i campi `status`, `notes` e la tabella relazionale `contact_tags`.
+## Gestione database
+Lo schema **SQLite** viene creato e migrato automaticamente da SQLAlchemy al
+primo avvio. Se modifichi la struttura delle tabelle durante lo sviluppo, puoi
+semplicemente eliminare il file `data/app.db`: l'app ricostruirà il database con
+lo schema aggiornato al successivo run.
 
-Esegui le migrazioni Alembic incluse nel repository:
-
-```bash
-alembic upgrade head
-```
-
-Per un reset o downgrade:
-
-```bash
-alembic downgrade -1
 ### Osservabilità & Prometheus
 
 L'applicazione espone metriche in formato **Prometheus** all'endpoint `GET /metrics`.
@@ -303,23 +296,25 @@ docker run --env-file .env -p 8000:8000 email-ingestor
 - La cartella `model_store/` viene copiata nell'immagine: puoi sovrascriverla montando un volume se devi aggiornare i modelli.
 
 ### Docker Compose con profili
-Il file `docker-compose.yml` dichiara i servizi:
-- `web`: API FastAPI (porta 8000).
-- `worker`: esegue `scripts.scheduler` per lanciare periodicamente l'ingestor.
-- `db`: Postgres 15 con healthcheck.
+Il file `docker-compose.yml` dichiara i servizi applicativi `web` e `worker` per
+avviare rispettivamente le API FastAPI (porta 8000) e il job scheduler. Entrambi
+montano i volumi nominati `model_store` e `lead_exports` (`/app/model_store` e
+`/app/data`) per condividere i modelli ML e l'export Excel (`LEADS_XLSX_PATH`).
 
-Sono definiti due profili Compose per orchestrare gli ambienti:
-- **Dev (`--profile dev`)**: abilita `web-dev` e `worker-dev` con `--reload` e bind mount di `app/`, `libs/` e `scripts/` per hot-reload. Esempio:
+Sono definiti due profili Compose:
+- **Dev (`--profile dev`)**: abilita `web-dev` e `worker-dev` con `--reload` e bind
+  mount di `app/`, `libs/` e `scripts/` per hot-reload. Esempio:
   ```bash
-  docker compose --profile dev up web-dev worker-dev db
+  docker compose --profile dev up web-dev worker-dev
   ```
-- **Prod (`--profile prod`)**: usa i servizi `web` e `worker` basati sull'immagine buildata, più `db` per Postgres. Esempio:
+- **Prod (`--profile prod`)**: usa i servizi `web` e `worker` basati
+  sull'immagine buildata.
   ```bash
-  docker compose --profile prod up -d web worker db
+  docker compose --profile prod up -d web worker
   ```
 
-Entrambi i profili montano i volumi nominati `model_store` e `lead_exports` all'interno del container (`/app/model_store` e `/app/data`) per condividere i modelli ML e l'export Excel (`LEADS_XLSX_PATH`).
-Compose carica automaticamente le variabili dal file `.env` (IMAP/SMTP/Postgres) tramite `env_file`. Personalizza `POSTGRES_*` e `DATABASE_URL` nel tuo `.env` per puntare al servizio `db`.
+Compose carica automaticamente le variabili dal file `.env` (IMAP/SMTP, percorso
+SQLite) tramite `env_file`.
 
 ---
 
@@ -347,7 +342,6 @@ La pipeline **GitHub Actions** (Tests) ora esegue:
 - [x] Idempotenza (ProcessedMessage), notifiche SMTP  
 - [x] Rule-based scoring, **ML Naive Bayes** + training script  
 - [x] Test (pytest) + CI  
-- [ ] Alembic + Postgres  
 - [ ] OAuth Gmail (IMAP) / Microsoft 365  
 - [x] Docker Compose (app + db) e profili prod  
 - [ ] UI web per revisione/annotazione lead  
