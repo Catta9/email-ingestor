@@ -1,3 +1,5 @@
+"""Applicazione FastAPI che espone dashboard e API per l'ingestione email."""
+
 from __future__ import annotations
 
 import asyncio
@@ -34,15 +36,21 @@ LeadState = Literal["new", "reviewed"]
 
 
 class ContactUpdate(BaseModel):
+    """Payload ammesso per aggiornare lo stato o le note di un contatto."""
+
     status: LeadState | None = Field(default=None)
     notes: str | None = Field(default=None, max_length=2000)
 
 
 class TagCreate(BaseModel):
+    """Payload per aggiungere un nuovo tag al contatto."""
+
     tag: str = Field(min_length=1, max_length=50)
 
 
 def serialize_contact(contact: Contact) -> Dict[str, object]:
+    """Trasforma il modello ORM in un dizionario serializzabile JSON."""
+
     return {
         "id": contact.id,
         "email": contact.email,
@@ -62,6 +70,8 @@ def serialize_contact(contact: Contact) -> Dict[str, object]:
         "tags": [tag.tag for tag in contact.tags],
     }
 class MetricsEndpointMiddleware(BaseHTTPMiddleware):
+    """Espone `/metrics` senza coinvolgere il router principale."""
+
     async def dispatch(self, request: Request, call_next):  # type: ignore[override]
         if request.url.path == "/metrics":
             body = render_metrics()
@@ -73,7 +83,7 @@ app.add_middleware(MetricsEndpointMiddleware)
 
 
 class EventBroadcaster:
-    """Manage ingestion runs and publish events to subscribers."""
+    """Gestisce l'esecuzione dell'ingestione e i client SSE collegati."""
 
     def __init__(self) -> None:
         self._queues: set[asyncio.Queue[IngestionEvent]] = set()
@@ -89,18 +99,26 @@ class EventBroadcaster:
         }
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Imposta l'event loop usato per le notifiche asincrone."""
+
         self._loop = loop
 
     async def subscribe(self) -> asyncio.Queue[IngestionEvent]:
+        """Registra un nuovo client SSE restituendo la sua coda di eventi."""
+
         queue: asyncio.Queue[IngestionEvent] = asyncio.Queue()
         queue.put_nowait(self._last_status)
         self._queues.add(queue)
         return queue
 
     async def unsubscribe(self, queue: asyncio.Queue[IngestionEvent]) -> None:
+        """Rimuove il client SSE dalla lista dei sottoscrittori."""
+
         self._queues.discard(queue)
 
     async def start_run(self) -> None:
+        """Avvia l'ingestione in un thread dedicato, evitando run concorrenti."""
+
         async with self._lock:
             if self._running:
                 raise RuntimeError("Ingestion already running")
@@ -124,9 +142,13 @@ class EventBroadcaster:
         self._current_future = loop.run_in_executor(None, _run)
 
     def publish_status(self, state: str, message: str) -> None:
+        """Pubblica uno stato sintetico (idle/running/error)."""
+
         self.publish({"type": "status", "message": message, "data": {"state": state}})
 
     def publish(self, event: IngestionEvent) -> None:
+        """Invia un evento a tutte le code registrate."""
+
         if self._loop is None:
             return
 
@@ -139,6 +161,8 @@ class EventBroadcaster:
         self._loop.call_soon_threadsafe(_broadcast, event)
 
     def _finish_run(self) -> None:
+        """Ripristina lo stato interno al termine dell'esecuzione."""
+
         self._running = False
         self._current_future = None
         self.publish_status("idle", "In attesa di una nuova esecuzione")
@@ -234,6 +258,8 @@ async def add_contact_tag(
 
 @app.post("/ingestion/run")
 async def trigger_ingestion() -> Dict[str, str]:
+    """Avvia l'ingestione manualmente restituendo lo stato avvio."""
+
     try:
         await events.start_run()
     except RuntimeError as exc:
@@ -243,6 +269,8 @@ async def trigger_ingestion() -> Dict[str, str]:
 
 @app.get("/ingestion/stream")
 async def ingestion_stream() -> StreamingResponse:
+    """Espone il flusso SSE con gli eventi dell'ingestione."""
+
     queue = await events.subscribe()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -258,6 +286,8 @@ async def ingestion_stream() -> StreamingResponse:
 
 @app.get("/export/xlsx")
 async def export_xlsx() -> StreamingResponse:
+    """Genera e restituisce l'export Excel aggiornato del database."""
+
     with SessionLocal() as db:
         rows = (
             db.execute(select(Contact).options(selectinload(Contact.tags)))

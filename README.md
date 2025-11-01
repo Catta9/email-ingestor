@@ -191,13 +191,14 @@ L'interfaccia `FastAPI` espone `/` con una SPA vanilla JS potenziata:
 
 - tabella lead con stato modificabile (`Nuovo` / `In revisione`), note testuali e tag
 - form rapido per aggiungere tag (evita duplicati in modo case-insensitive)
-- textarea con salvataggio note e log in tempo reale delle operazioni
+- textarea con salvataggio note e log in tempo reale con icone leggibili
 - card informativa sulle credenziali IMAP definite via `.env`
+- pannello riassuntivo con contatori aggiornati (trovate/elaborate/lead/saltate)
+- pulsante diretto "Scarica Excel" che apre l'export aggiornato
 
 Esempio di schermata con lead aggiornati:
 
 ![Dashboard lead con stato, note e tag](artifacts/dashboard-leads.png)
-- **Excel**: file creato/aggiornato in `EXCEL_PATH` (default `./data/leads.xlsx`)  
 - **API FastAPI** (se abilitate nel progetto):
   - `GET /health` → stato servizio
   - `GET /contacts?limit&offset` → lista contatti (DB)
