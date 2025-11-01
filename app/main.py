@@ -39,22 +39,30 @@ DEFAULT_API_KEY = "local-dev-key"
 LeadState = Literal["new", "reviewed"]
 
 
+def _normalize_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = value.strip()
+    return cleaned or None
+
+
 def _expected_api_key() -> str:
-    return (
-        os.getenv("INGESTOR_API_KEY")
-        or os.getenv("API_KEY")
-        or DEFAULT_API_KEY
+    expected = (
+        _normalize_key(os.getenv("INGESTOR_API_KEY"))
+        or _normalize_key(os.getenv("API_KEY"))
+        or _normalize_key(DEFAULT_API_KEY)
     )
+    return expected or ""
 
 
 async def api_key_guard(
     request: Request,
     x_api_key: str | None = Header(None, alias=API_KEY_HEADER_NAME),
 ) -> None:
-    expected = _expected_api_key()
+    expected = _normalize_key(_expected_api_key())
     if not expected:
         return
-    provided = x_api_key or request.query_params.get("api_key")
+    provided = _normalize_key(x_api_key or request.query_params.get("api_key"))
     if not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
