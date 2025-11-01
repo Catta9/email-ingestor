@@ -51,6 +51,10 @@ uvicorn app.main:app --reload
 ```
 Il server espone l'interfaccia web all'indirizzo <http://localhost:8000/>.
 
+Il ciclo di vita dell'applicazione utilizza il gestore `lifespan` di FastAPI per
+inizializzare il database e i servizi di broadcast SSE in modo sicuro durante
+lo startup e lo shutdown dell'istanza.
+
 ## Ingestione dal pannello web
 
 1. Apri <http://localhost:8000/> nel browser.
@@ -67,6 +71,25 @@ GET http://localhost:8000/export/xlsx
 ```
 
 Il file viene generato nel percorso indicato da `EXCEL_PATH`.
+
+## Monitoraggio e diagnostica
+
+* Endpoint **`GET /metrics`** compatibile Prometheus per verificare il numero di
+  messaggi scoperti, lead creati e altri contatori operativi.
+* Streaming SSE su **`GET /ingestion/stream`** per seguire in tempo reale gli
+  eventi emessi durante l'elaborazione.
+
+## Test automatici
+
+Per assicurarti che le modifiche non introducano regressioni esegui la suite di
+test:
+
+```bash
+pytest
+```
+
+Tutti i test dovrebbero passare senza errori; gli avvisi di deprecazione sono
+gestiti dal nuovo gestore di ciclo di vita (`lifespan`).
 
 ---
 
