@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency for local 
     from libs.simple_metrics import precision_recall_curve, roc_auc_score, roc_curve  # type: ignore
 
 from libs.ml_classifier import LeadMLClassifier, LeadModelConfig
+from scripts.train_classifier import _compute_metrics_from_scores
 
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,8 @@ def evaluate(dataset_path: Path, model_path: Path | None, output_dir: Path) -> P
 
     threshold = classifier.decision_threshold
 
+    metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores, threshold)
+    metrics["threshold"] = threshold
     metrics, roc_data, pr_data = _compute_metrics(y_true, y_scores, threshold)
 
     output_dir.mkdir(parents=True, exist_ok=True)

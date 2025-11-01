@@ -4,6 +4,13 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, Tuple
 
+from libs.compat import prometheus_client
+
+CONTENT_TYPE_LATEST = prometheus_client.CONTENT_TYPE_LATEST
+CollectorRegistry = prometheus_client.CollectorRegistry
+Counter = prometheus_client.Counter
+Gauge = prometheus_client.Gauge
+generate_latest = prometheus_client.generate_latest
 try:  # pragma: no cover - exercised indirectly by tests
     from prometheus_client import (  # type: ignore
         CONTENT_TYPE_LATEST,
