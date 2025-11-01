@@ -4,7 +4,22 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Dict, Tuple
 
-from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, Counter, Gauge, generate_latest
+try:  # pragma: no cover - exercised indirectly by tests
+    from prometheus_client import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        generate_latest,
+    )
+except ModuleNotFoundError:  # pragma: no cover - dependency not installed in tests
+    from libs._compat.prometheus import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        generate_latest,
+    )
 
 _REGISTRY = CollectorRegistry(auto_describe=True)
 
