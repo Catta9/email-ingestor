@@ -14,9 +14,13 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 import joblib
+import numpy as np
+from scipy import sparse
 
 
 try:
+    from sklearn.base import BaseEstimator, TransformerMixin
+    from sklearn.feature_extraction import DictVectorizer
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
@@ -28,6 +32,19 @@ except ModuleNotFoundError:  # pragma: no cover - optional dependency for CI env
         roc_auc_score,
         roc_curve,
     )
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
+    class _BaseEstimatorFallback:
+        pass
+
+    class _TransformerMixinFallback:
+        pass
+
+    BaseEstimator = _BaseEstimatorFallback  # type: ignore[misc,assignment]
+    TransformerMixin = _TransformerMixinFallback  # type: ignore[misc,assignment]
+    DictVectorizer = None  # type: ignore[assignment]
+    TfidfVectorizer = None  # type: ignore[assignment]
+    LogisticRegression = Pipeline = None  # type: ignore[assignment]
+    precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
@@ -489,6 +506,71 @@ def _train_logistic_regression(train_set: list[dict[str, str]], config: Training
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
         logger.info("scikit-learn not available, using simplified logistic regression")
         return _train_simple_logistic(train_set, config)
+class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
+    """Combine TF-IDF text features with optional engineered features."""
+
+    def __init__(self, use_ngrams: bool, use_features: bool):
+        self.use_ngrams = use_ngrams
+        self.use_features = use_features
+        self._vectorizer: TfidfVectorizer | None = None
+        self._dict_vectorizer: DictVectorizer | None = None
+
+    def fit(self, X: Sequence[str], y: Sequence[int] | None = None):  # noqa: D401
+        if TfidfVectorizer is None:
+            raise RuntimeError(
+                "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+            )
+
+        texts = list(X)
+        ngram_range = (1, 2) if self.use_ngrams else (1, 1)
+        self._vectorizer = TfidfVectorizer(
+            ngram_range=ngram_range,
+            min_df=1,
+            stop_words=list(EXTENDED_STOPWORDS),
+            strip_accents="unicode",
+        )
+        self._vectorizer.fit(texts)
+
+        if self.use_features:
+            if DictVectorizer is None:
+                raise RuntimeError(
+                    "scikit-learn DictVectorizer is required when use_features is enabled."
+                )
+            self._dict_vectorizer = DictVectorizer(sparse=True)
+            feature_dicts = [_extract_features(text) for text in texts]
+            self._dict_vectorizer.fit(feature_dicts)
+
+        return self
+
+    def transform(self, X: Sequence[str]):  # noqa: D401
+        if self._vectorizer is None:
+            raise RuntimeError("CombinedFeaturesTransformer must be fitted before use.")
+
+        texts = list(X)
+        tfidf_matrix = self._vectorizer.transform(texts)
+
+        if not self.use_features or self._dict_vectorizer is None:
+            return tfidf_matrix
+
+        feature_dicts = [_extract_features(text) for text in texts]
+        feature_matrix = self._dict_vectorizer.transform(feature_dicts)
+        return sparse.hstack([tfidf_matrix, feature_matrix], format="csr")
+
+
+def _train_logistic_regression(
+    train_set: list[dict[str, str]],
+    random_state: int,
+    use_ngrams: bool,
+    use_features: bool,
+) -> Pipeline:
+    if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
+        raise RuntimeError(
+            "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+        )
+    if use_features and DictVectorizer is None:
+        raise RuntimeError(
+            "scikit-learn DictVectorizer is required when use_features is enabled."
+        )
 
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
@@ -496,12 +578,10 @@ def _train_logistic_regression(train_set: list[dict[str, str]], config: Training
     pipeline = Pipeline(
         [
             (
-                "tfidf",
-                TfidfVectorizer(
-                    ngram_range=(1, 2),
-                    min_df=1,
-                    stop_words=list(EXTENDED_STOPWORDS),
-                    strip_accents="unicode",
+                "features",
+                _CombinedFeaturesTransformer(
+                    use_ngrams=use_ngrams,
+                    use_features=use_features,
                 ),
             ),
             (
@@ -707,6 +787,12 @@ def train(config: TrainingConfig) -> None:
 
     if config.algorithm == "logreg":
         pipeline = _train_logistic_regression(train_set, config)
+        pipeline = _train_logistic_regression(
+            train_set,
+            config.random_state,
+            use_ngrams=config.use_ngrams,
+            use_features=config.use_features,
+        )
         model_output_path = config.output_path
         joblib.dump(pipeline, model_output_path)
         logger.info("Persisted TF-IDF + Logistic Regression pipeline to %s", model_output_path)
