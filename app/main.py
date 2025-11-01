@@ -3,14 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
-import secrets
 from io import BytesIO
 from pathlib import Path
 from typing import AsyncGenerator, Dict, List, Literal
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import FileResponse, StreamingResponse
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -34,40 +30,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="Email → CRM/Excel Ingestor")
 
 
-API_KEY_HEADER_NAME = "X-API-Key"
-DEFAULT_API_KEY = "local-dev-key"
 LeadState = Literal["new", "reviewed"]
-
-
-def _normalize_key(value: str | None) -> str | None:
-    if not value:
-        return None
-    cleaned = value.strip()
-    return cleaned or None
-
-
-def _expected_api_key() -> str:
-    expected = (
-        _normalize_key(os.getenv("INGESTOR_API_KEY"))
-        or _normalize_key(os.getenv("API_KEY"))
-        or _normalize_key(DEFAULT_API_KEY)
-    )
-    return expected or ""
-
-
-async def api_key_guard(
-    request: Request,
-    x_api_key: str | None = Header(None, alias=API_KEY_HEADER_NAME),
-) -> None:
-    expected = _normalize_key(_expected_api_key())
-    if not expected:
-        return
-    provided = _normalize_key(x_api_key or request.query_params.get("api_key"))
-    if not provided or not secrets.compare_digest(provided, expected):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-        )
 
 
 class ContactUpdate(BaseModel):
@@ -211,7 +174,6 @@ def health() -> Dict[str, str]:
 async def list_contacts(
     limit: int = 100,
     offset: int = 0,
-    _: None = Depends(api_key_guard),
 ) -> List[Dict[str, object]]:
     with SessionLocal() as db:
         stmt = (
@@ -235,7 +197,6 @@ def _get_contact(session: Session, contact_id: str) -> Contact:
 async def update_contact(
     contact_id: str,
     payload: ContactUpdate,
-    _: None = Depends(api_key_guard),
 ) -> Dict[str, object]:
     with SessionLocal() as db:
         contact = _get_contact(db, contact_id)
@@ -254,7 +215,6 @@ async def update_contact(
 async def add_contact_tag(
     contact_id: str,
     payload: TagCreate,
-    _: None = Depends(api_key_guard),
 ) -> Dict[str, object]:
     tag_value = payload.tag.strip()
     if not tag_value:
@@ -273,7 +233,7 @@ async def add_contact_tag(
 
 
 @app.post("/ingestion/run")
-async def trigger_ingestion(_: None = Depends(api_key_guard)) -> Dict[str, str]:
+async def trigger_ingestion() -> Dict[str, str]:
     try:
         await events.start_run()
     except RuntimeError as exc:
@@ -282,7 +242,7 @@ async def trigger_ingestion(_: None = Depends(api_key_guard)) -> Dict[str, str]:
 
 
 @app.get("/ingestion/stream")
-async def ingestion_stream(_: None = Depends(api_key_guard)) -> StreamingResponse:
+async def ingestion_stream() -> StreamingResponse:
     queue = await events.subscribe()
 
     async def event_generator() -> AsyncGenerator[str, None]:
@@ -297,7 +257,7 @@ async def ingestion_stream(_: None = Depends(api_key_guard)) -> StreamingRespons
 
 
 @app.get("/export/xlsx")
-async def export_xlsx(_: None = Depends(api_key_guard)) -> StreamingResponse:
+async def export_xlsx() -> StreamingResponse:
     with SessionLocal() as db:
         rows = (
             db.execute(select(Contact).options(selectinload(Contact.tags)))

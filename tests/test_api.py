@@ -1,5 +1,4 @@
 from __future__ import annotations
-from __future__ import annotations
 
 from datetime import datetime
 from io import BytesIO
@@ -7,8 +6,6 @@ from io import BytesIO
 from openpyxl import load_workbook
 
 from libs.models import Contact, ContactTag
-
-API_HEADERS = {"X-API-Key": "test-key"}
 
 
 def test_contacts_endpoint_returns_data(client, session_factory):
@@ -24,7 +21,7 @@ def test_contacts_endpoint_returns_data(client, session_factory):
         session.add(contact)
         session.commit()
 
-        response = client.get("/contacts", headers=API_HEADERS)
+        response = client.get("/contacts")
         assert response.status_code == 200
         payload = response.json()
         assert isinstance(payload, list)
@@ -59,7 +56,7 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
         session.add(contact)
         session.commit()
 
-        response = client.get("/export/xlsx", headers=API_HEADERS)
+        response = client.get("/export/xlsx")
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         assert response.headers["content-disposition"].startswith("attachment; filename=\"contacts_export.xlsx\"")
@@ -95,11 +92,6 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
         session.close()
 
 
-def test_contacts_endpoint_requires_api_key(client, session_factory):
-    response = client.get("/contacts")
-    assert response.status_code == 401
-
-
 def test_update_contact_status_and_notes(client, session_factory):
     session = session_factory()
     try:
@@ -109,7 +101,6 @@ def test_update_contact_status_and_notes(client, session_factory):
 
         response = client.patch(
             f"/contacts/{contact.id}",
-            headers=API_HEADERS,
             json={"status": "reviewed", "notes": "Chiamato il cliente"},
         )
         assert response.status_code == 200
@@ -122,24 +113,6 @@ def test_update_contact_status_and_notes(client, session_factory):
         assert contact.notes == "Chiamato il cliente"
     finally:
         session.close()
-
-
-def test_update_contact_without_api_key_is_rejected(client, session_factory):
-    session = session_factory()
-    try:
-        contact = Contact(email="lead@example.com")
-        session.add(contact)
-        session.commit()
-
-        response = client.patch(
-            f"/contacts/{contact.id}",
-            json={"status": "reviewed"},
-        )
-        assert response.status_code == 401
-    finally:
-        session.close()
-
-
 def test_add_tag_to_contact(client, session_factory):
     session = session_factory()
     try:
@@ -149,7 +122,6 @@ def test_add_tag_to_contact(client, session_factory):
 
         response = client.post(
             f"/contacts/{contact.id}/tags",
-            headers=API_HEADERS,
             json={"tag": "priorità"},
         )
         assert response.status_code == 200
@@ -172,7 +144,6 @@ def test_add_tag_avoids_duplicates(client, session_factory):
 
         response = client.post(
             f"/contacts/{contact.id}/tags",
-            headers=API_HEADERS,
             json={"tag": "Caldo"},
         )
         assert response.status_code == 200
