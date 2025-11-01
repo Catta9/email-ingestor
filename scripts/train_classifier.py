@@ -8,7 +8,6 @@ import os
 import random
 import re
 import shutil
-from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,48 +16,30 @@ from typing import Iterable, Sequence
 from libs.compat import joblib
 
 try:  # pragma: no cover - optional dependency
-    import numpy as np  # type: ignore
+    from sklearn.base import BaseEstimator, TransformerMixin  # type: ignore
+    from sklearn.feature_extraction import DictVectorizer  # type: ignore
+    from sklearn.feature_extraction.text import TfidfVectorizer  # type: ignore
+    from sklearn.linear_model import LogisticRegression  # type: ignore
+    from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve  # type: ignore
+    from sklearn.pipeline import Pipeline  # type: ignore
 except ModuleNotFoundError:  # pragma: no cover - executed in minimal environments
-    np = None  # type: ignore[assignment]
-import joblib
-import numpy as np
-from scipy import sparse
-
-
-try:
-    from sklearn.base import BaseEstimator, TransformerMixin
-    from sklearn.feature_extraction import DictVectorizer
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    from sklearn.linear_model import LogisticRegression
-    from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
-    from sklearn.pipeline import Pipeline
-except ModuleNotFoundError:  # pragma: no cover - optional dependency for CI environment
-    TfidfVectorizer = LogisticRegression = Pipeline = None  # type: ignore
-    from libs.simple_metrics import (  # type: ignore
-        precision_recall_curve,
-        roc_auc_score,
-        roc_curve,
-    )
-except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
-    class _BaseEstimatorFallback:
-        pass
-
-    class _TransformerMixinFallback:
-        pass
-
-    BaseEstimator = _BaseEstimatorFallback  # type: ignore[misc,assignment]
-    TransformerMixin = _TransformerMixinFallback  # type: ignore[misc,assignment]
+    BaseEstimator = object  # type: ignore[misc,assignment]
+    TransformerMixin = object  # type: ignore[misc,assignment]
     DictVectorizer = None  # type: ignore[assignment]
     TfidfVectorizer = None  # type: ignore[assignment]
-    LogisticRegression = Pipeline = None  # type: ignore[assignment]
+    LogisticRegression = None  # type: ignore[assignment]
+    Pipeline = None  # type: ignore[assignment]
     precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore[assignment]
+
+from scipy import sparse
 
 
 logger = logging.getLogger(__name__)
 _TOKEN_RE = re.compile(r"[\w']+")
 
-# Stopwords estese (stesso set del classifier)
+# Stopwords estese (IT + EN)
 EXTENDED_STOPWORDS = {
+    # Italiano
     "a", "ai", "al", "alla", "alle", "allo", "anche", "avere", "che", "chi", "ci", "con",
     "cosa", "cui", "da", "dal", "dalla", "dalle", "dallo", "degli", "dei", "del", "della",
     "delle", "dello", "di", "dove", "e", "ed", "essere", "gli", "ha", "hai", "hanno", "ho",
@@ -69,6 +50,7 @@ EXTENDED_STOPWORDS = {
     "stato", "su", "sua", "sue", "sui", "sul", "sulla", "sulle", "sullo", "suo", "suoi",
     "ti", "tra", "tu", "tua", "tue", "tuo", "tuoi", "tutto", "un", "una", "uno", "va",
     "vai", "voi", "vostro",
+    # English
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any",
     "are", "aren't", "as", "at", "be", "because", "been", "before", "being", "below",
     "between", "both", "but", "by", "can", "can't", "cannot", "could", "couldn't", "did",
@@ -86,7 +68,7 @@ EXTENDED_STOPWORDS = {
     "we're", "we've", "were", "weren't", "what", "what's", "when", "when's", "where",
     "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't",
     "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours",
-    "yourself", "yourselves"
+    "yourself", "yourselves",
 }
 
 
@@ -130,41 +112,40 @@ def _tokenize(text: str) -> list[str]:
 def _extract_ngrams(tokens: list[str], n: int = 2) -> list[str]:
     if len(tokens) < n:
         return []
-    return [" ".join(tokens[i:i+n]) for i in range(len(tokens) - n + 1)]
+    return [" ".join(tokens[i : i + n]) for i in range(len(tokens) - n + 1)]
 
 
 def _extract_features(text: str) -> dict[str, float]:
-    """Estrae feature numeriche (stesso del classifier)."""
     text_lower = text.lower()
-    urgency_words = ['urgente', 'urgent', 'asap', 'immediato', 'subito', 'prima possibile']
+    urgency_words = ["urgente", "urgent", "asap", "immediato", "subito", "prima possibile"]
     urgency_count = sum(1 for word in urgency_words if word in text_lower)
-    greeting_words = ['buongiorno', 'buonasera', 'gentile', 'dear', 'hello', 'hi', 'salve']
+    greeting_words = ["buongiorno", "buonasera", "gentile", "dear", "hello", "hi", "salve"]
     has_greeting = any(word in text_lower for word in greeting_words)
-    question_count = text.count('?')
+    question_count = text.count("?")
     word_count = len(text.split())
-    has_phone = bool(re.search(r'\+?\d[\d\s().-]{7,}', text))
-    has_email = bool(re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text))
-    lines = text.split('\n')
-    signature_indicators = ['tel', 'phone', 'mobile', 'cell', 'email', '@']
-    signature_score = sum(
-        1 for line in lines[-5:] if any(ind in line.lower() for ind in signature_indicators)
-    ) / 5.0
-    
+    has_phone = bool(re.search(r"\+?\d[\d\s().-]{7,}", text))
+    has_email = bool(re.search(r"[\w\.-]+@[\w\.-]+\.\w+", text))
+    lines = [line for line in text.split("\n") if line.strip()]
+    window = lines[-5:] if lines else []
+    signature_indicators = ["tel", "phone", "mobile", "cell", "email", "@"]
+    signature_matches = sum(
+        1 for line in window if any(ind in line.lower() for ind in signature_indicators)
+    )
+    signature_score = signature_matches / max(len(window), 5)
+
     return {
-        'urgency_score': min(urgency_count / 3.0, 1.0),
-        'has_greeting': float(has_greeting),
-        'question_density': min(question_count / max(word_count / 50, 1), 1.0),
-        'length_score': min(word_count / 200.0, 1.0),
-        'has_contact_info': float(has_phone or has_email),
-        'signature_score': signature_score,
+        "urgency_score": min(urgency_count / 3.0, 1.0),
+        "has_greeting": float(has_greeting),
+        "question_density": min(question_count / max(word_count / 50, 1), 1.0),
+        "length_score": min(word_count / 200.0, 1.0),
+        "has_contact_info": float(has_phone or has_email),
+        "signature_score": signature_score,
     }
 
 
 def _feature_tokens_from_text(text: str) -> list[str]:
-    """Encode continuous features as pseudo tokens for linear models."""
     feature_tokens: list[str] = []
-    features = _extract_features(text)
-    for name, value in features.items():
+    for name, value in _extract_features(text).items():
         if value <= 0:
             continue
         repeats = max(1, int(round(value * 3)))
@@ -173,7 +154,7 @@ def _feature_tokens_from_text(text: str) -> list[str]:
 
 
 class _TfidfAnalyzer:
-    """Tokenizer compatible with TF-IDF that mirrors the NB pre-processing."""
+    """Tokenizer compatible with TF-IDF mirroring the NB preprocessing."""
 
     def __init__(self, use_features: bool, use_ngrams: bool) -> None:
         self.use_features = use_features
@@ -189,51 +170,41 @@ class _TfidfAnalyzer:
 
 
 def _augment_record(record: dict[str, str]) -> list[dict[str, str]]:
-    """Data augmentation: genera varianti di un record."""
-    augmented = [record]  # include originale
-    
-    # Sinonimi comuni IT/EN
+    augmented = [record]
     synonyms = {
-        'preventivo': ['quotazione', 'stima', 'budget'],
-        'richiesta': ['domanda', 'richiedo', 'vorrei'],
-        'urgente': ['immediato', 'asap', 'subito'],
-        'quote': ['quotation', 'estimate', 'pricing'],
-        'request': ['need', 'looking for', 'inquire'],
+        "preventivo": ["quotazione", "stima", "budget"],
+        "richiesta": ["domanda", "richiedo", "vorrei"],
+        "urgente": ["immediato", "asap", "subito"],
+        "quote": ["quotation", "estimate", "pricing"],
+        "request": ["need", "looking for", "inquire"],
     }
-    
-    subject = record.get('subject', '')
-    body = record.get('body', '')
-    
-    # Genera 1-2 varianti con sinonimi
+
+    subject = record.get("subject", "")
+    body = record.get("body", "")
+
     for original, replacements in synonyms.items():
         if original in subject.lower() or original in body.lower():
-            for replacement in replacements[:1]:  # usa solo 1 sinonimo
+            for replacement in replacements[:1]:
                 new_subject = re.sub(
-                    r'\b' + re.escape(original) + r'\b', 
-                    replacement, 
-                    subject, 
-                    flags=re.IGNORECASE
+                    rf"\b{re.escape(original)}\b", replacement, subject, flags=re.IGNORECASE
                 )
                 new_body = re.sub(
-                    r'\b' + re.escape(original) + r'\b', 
-                    replacement, 
-                    body, 
-                    flags=re.IGNORECASE
+                    rf"\b{re.escape(original)}\b", replacement, body, flags=re.IGNORECASE
                 )
                 if new_subject != subject or new_body != body:
                     augmented.append({
-                        'label': record['label'],
-                        'subject': new_subject,
-                        'body': new_body
+                        "label": record["label"],
+                        "subject": new_subject,
+                        "body": new_body,
                     })
-                    break  # 1 variante per sinonimo
-    
-    return augmented[:3]  # max 3 varianti (originale + 2)
+                    break
+    return augmented[:3]
 
 
 def _load_records(path: Path, augment: bool = False) -> list[dict[str, str]]:
     if not path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
+
     records: list[dict[str, str]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line_number, raw in enumerate(handle, start=1):
@@ -246,16 +217,16 @@ def _load_records(path: Path, augment: bool = False) -> list[dict[str, str]]:
                 raise ValueError(f"Invalid JSON at line {line_number}: {exc}") from exc
             if "label" not in record:
                 raise ValueError(f"Missing 'label' field at line {line_number}")
-            
-            if augment and record.get('label') == 1:  # solo lead positivi
+
+            if augment and record.get("label") == 1:
                 records.extend(_augment_record(record))
             else:
                 records.append(record)
-    
+
     if not records:
         raise ValueError("Dataset is empty")
-    
-    logger.info(f"Loaded {len(records)} records (augmentation: {augment})")
+
+    logger.info("Loaded %d records (augmentation: %s)", len(records), augment)
     return records
 
 
@@ -296,46 +267,41 @@ def _split_dataset(
 def _count_tokens_and_bigrams(
     records: Iterable[dict[str, str]], use_ngrams: bool
 ) -> tuple[dict[str, int], dict[str, int], dict[str, int], dict[str, int]]:
-    """Conta unigrams e bigrams per classe."""
     counts_pos: dict[str, int] = {}
     counts_neg: dict[str, int] = {}
     bigram_counts_pos: dict[str, int] = {}
     bigram_counts_neg: dict[str, int] = {}
-    
+
     for record in records:
         tokens = _tokenize(_prepare_text(record))
         target = counts_pos if int(record.get("label", 0)) == 1 else counts_neg
-        
-        # Unigrams
+
         for token in tokens:
             target[token] = target.get(token, 0) + 1
-        
-        # Bigrams
+
         if use_ngrams:
             bigrams = _extract_ngrams(tokens, n=2)
             bigram_target = bigram_counts_pos if int(record.get("label", 0)) == 1 else bigram_counts_neg
             for bigram in bigrams:
                 bigram_target[bigram] = bigram_target.get(bigram, 0) + 1
-    
+
     return counts_pos, counts_neg, bigram_counts_pos, bigram_counts_neg
 
 
 def _compute_feature_weights(
     records: Iterable[dict[str, str]], use_features: bool
 ) -> dict[str, float]:
-    """Calcola correlazione feature -> lead per pesatura."""
     if not use_features:
         return {}
-    
-    feature_sums_pos = {}
-    feature_sums_neg = {}
+
+    feature_sums_pos: dict[str, float] = {}
+    feature_sums_neg: dict[str, float] = {}
     count_pos = count_neg = 0
-    
+
     for record in records:
         text = _prepare_text(record)
         features = _extract_features(text)
         is_pos = int(record.get("label", 0)) == 1
-        
         if is_pos:
             count_pos += 1
             for k, v in features.items():
@@ -344,16 +310,14 @@ def _compute_feature_weights(
             count_neg += 1
             for k, v in features.items():
                 feature_sums_neg[k] = feature_sums_neg.get(k, 0.0) + v
-    
-    # Calcola media per classe
-    weights = {}
+
+    weights: dict[str, float] = {}
     for feat in feature_sums_pos.keys():
         avg_pos = feature_sums_pos[feat] / max(count_pos, 1)
-        avg_neg = feature_sums_neg.get(feat, 0) / max(count_neg, 1)
-        # Peso = differenza normalizzata
-        weights[feat] = (avg_pos - avg_neg) * 2.0  # scala per effetto maggiore
-    
-    logger.info(f"Feature weights: {weights}")
+        avg_neg = feature_sums_neg.get(feat, 0.0) / max(count_neg, 1)
+        weights[feat] = (avg_pos - avg_neg) * 2.0
+
+    logger.info("Feature weights: %s", weights)
     return weights
 
 
@@ -362,7 +326,7 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
         train_set, config.use_ngrams
     )
     feature_weights = _compute_feature_weights(train_set, config.use_features)
-    
+
     total_pos_tokens = sum(pos_counts.values())
     total_neg_tokens = sum(neg_counts.values())
     vocab = set(pos_counts) | set(neg_counts)
@@ -371,8 +335,8 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     num_neg = len(train_set) - num_pos
     total_docs = max(1, len(train_set))
 
-    model = {
-        "version": 2,  # versione aggiornata
+    model: dict[str, object] = {
+        "version": 2,
         "class_priors": {
             "1": num_pos / total_docs,
             "0": num_neg / total_docs,
@@ -387,21 +351,19 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
         },
         "vocabulary_size": len(vocab),
     }
-    
+
     if config.use_ngrams:
         model["bigram_counts"] = {
             "1": bigram_pos,
             "0": bigram_neg,
         }
-    
+
     if config.use_features:
         model["feature_weights"] = feature_weights
 
     return model
 
 
-def _train_logistic_regression(
-    train_set: list[dict[str, str]], config: TrainingConfig
 class _NaivePipelineAdapter:
     def __init__(self, model: dict, use_ngrams: bool, use_features: bool) -> None:
         self._model = model
@@ -416,7 +378,6 @@ class _NaivePipelineAdapter:
         return results
 
 
-def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int):
 @dataclass
 class _SimpleLogisticPipeline:
     vocabulary: dict[str, int]
@@ -492,11 +453,7 @@ def _train_simple_logistic(train_set: list[dict[str, str]], config: TrainingConf
 
     vocab_size = len(vocabulary)
     extra_size = len(extra_features) if config.use_features else 0
-    num_features = vocab_size + extra_size
-    if num_features == 0:
-        vocabulary = {}
-        extra_features = []
-        num_features = 1
+    num_features = max(1, vocab_size + extra_size)
 
     matrix: list[list[float]] = []
     for text, tokens in zip(texts, token_sequences):
@@ -554,14 +511,10 @@ def _train_simple_logistic(train_set: list[dict[str, str]], config: TrainingConf
     )
 
 
-def _train_logistic_regression(train_set: list[dict[str, str]], config: TrainingConfig):
-    if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
-        logger.info("scikit-learn not available, using simplified logistic regression")
-        return _train_simple_logistic(train_set, config)
-class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
+class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):  # type: ignore[misc]
     """Combine TF-IDF text features with optional engineered features."""
 
-    def __init__(self, use_ngrams: bool, use_features: bool):
+    def __init__(self, use_ngrams: bool, use_features: bool) -> None:
         self.use_ngrams = use_ngrams
         self.use_features = use_features
         self._vectorizer: TfidfVectorizer | None = None
@@ -569,17 +522,14 @@ class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
 
     def fit(self, X: Sequence[str], y: Sequence[int] | None = None):  # noqa: D401
         if TfidfVectorizer is None:
-            raise RuntimeError(
-                "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
-            )
+            raise RuntimeError("scikit-learn is required for the TF-IDF + Logistic Regression pipeline.")
 
         texts = list(X)
-        ngram_range = (1, 2) if self.use_ngrams else (1, 1)
+        analyzer = _TfidfAnalyzer(self.use_features, self.use_ngrams)
         self._vectorizer = TfidfVectorizer(
-            ngram_range=ngram_range,
+            analyzer=analyzer,
             min_df=1,
-            stop_words=list(EXTENDED_STOPWORDS),
-            strip_accents="unicode",
+            lowercase=False,
         )
         self._vectorizer.fit(texts)
 
@@ -609,45 +559,25 @@ class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
         return sparse.hstack([tfidf_matrix, feature_matrix], format="csr")
 
 
-def _train_logistic_regression(
-    train_set: list[dict[str, str]],
-    random_state: int,
-    use_ngrams: bool,
-    use_features: bool,
-) -> Pipeline:
+def _train_logistic_regression(train_set: list[dict[str, str]], config: TrainingConfig):
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
-        logger.warning(
-            "scikit-learn is not available; falling back to a lightweight Naive Bayes pipeline"
-        )
-        fallback_config = SimpleNamespace(use_ngrams=True, use_features=True)
-        model = _train_naive_bayes(train_set, fallback_config)  # type: ignore[arg-type]
-        return _NaivePipelineAdapter(model, True, True)
-    if use_features and DictVectorizer is None:
-        raise RuntimeError(
-            "scikit-learn DictVectorizer is required when use_features is enabled."
-        )
+        logger.info("scikit-learn not available, using simplified logistic regression")
+        return _train_simple_logistic(train_set, config)
+
+    if config.use_features and DictVectorizer is None:
+        raise RuntimeError("scikit-learn DictVectorizer is required when use_features is enabled.")
 
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
 
-    analyzer = _TfidfAnalyzer(
-        use_features=config.use_features, use_ngrams=config.use_ngrams
+    transformer = _CombinedFeaturesTransformer(
+        use_ngrams=config.use_ngrams,
+        use_features=config.use_features,
     )
 
     pipeline = Pipeline(
-        [
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    analyzer=analyzer,
-                    min_df=1,
-                    lowercase=False,
-                "features",
-                _CombinedFeaturesTransformer(
-                    use_ngrams=use_ngrams,
-                    use_features=use_features,
-                ),
-            ),
+        steps=[
+            ("features", transformer),
             (
                 "clf",
                 LogisticRegression(
@@ -664,7 +594,6 @@ def _train_logistic_regression(
 
 
 def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool) -> float:
-    """Predizione con bigrams e features."""
     tokens = _tokenize(text)
     if not tokens:
         return 0.0
@@ -680,14 +609,12 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
     log_pos = math.log(prior_pos)
     log_neg = math.log(prior_neg)
 
-    # Unigrams
     for token in tokens:
         pos_count = pos_counts.get(token, 0)
         neg_count = neg_counts.get(token, 0)
         log_pos += math.log((pos_count + 1) / (total_pos + vocab_size))
         log_neg += math.log((neg_count + 1) / (total_neg + vocab_size))
 
-    # Bigrams
     if use_ngrams and "bigram_counts" in model:
         bigrams = _extract_ngrams(tokens, n=2)
         bigram_pos = model["bigram_counts"]["1"]
@@ -696,7 +623,6 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
             log_pos += 0.5 * math.log((bigram_pos.get(bigram, 0) + 1) / (total_pos + vocab_size))
             log_neg += 0.5 * math.log((bigram_neg.get(bigram, 0) + 1) / (total_neg + vocab_size))
 
-    # Features
     if use_features and "feature_weights" in model:
         features = _extract_features(text)
         weights = model["feature_weights"]
@@ -760,7 +686,6 @@ def _fallback_roc_curve(
         fpr_values.append(fp / negatives)
         thresholds.append(threshold)
 
-    # ensure the curve reaches (0,0) and (1,1)
     if thresholds:
         thresholds.append(min(thresholds) - 1e-6)
     else:
@@ -816,14 +741,6 @@ def _compute_metrics_from_scores(
     y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
 
     tp, fp, tn, fn = _confusion_matrix(y_true_list, y_pred)
-    y_true_list = [int(v) for v in y_true]
-    y_scores_list = [float(v) for v in y_scores]
-    y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
-
-    tp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 1)
-    fp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 0)
-    tn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 0)
-    fn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 1)
 
     total = len(y_true_list)
     accuracy = (tp + tn) / total if total else 0.0
@@ -858,9 +775,6 @@ def _compute_metrics_from_scores(
             "recall": pr_recall,
             "thresholds": pr_thresholds,
         }
-    fpr, tpr, roc_thresholds = roc_curve(y_true_list, y_scores_list)
-    roc_auc = roc_auc_score(y_true_list, y_scores_list)
-    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_list, y_scores_list)
 
     metrics = {
         "accuracy": accuracy,
@@ -872,16 +786,6 @@ def _compute_metrics_from_scores(
         "tn": tn,
         "fn": fn,
         "roc_auc": roc_auc,
-    }
-    roc_data = {
-        "fpr": list(fpr),
-        "tpr": list(tpr),
-        "thresholds": list(roc_thresholds),
-    }
-    pr_data = {
-        "precision": list(pr_precision),
-        "recall": list(pr_recall),
-        "thresholds": list(pr_thresholds),
     }
     return metrics, roc_data, pr_data
 
@@ -963,26 +867,25 @@ def train(config: TrainingConfig) -> None:
     records = _load_records(config.dataset_path, augment=config.augment_data)
     train_set, test_set = _split_dataset(records, config.test_size, config.random_state)
 
-    pos_train = sum(1 for r in train_set if r.get('label') == 1)
+    pos_train = sum(1 for r in train_set if int(r.get("label", 0)) == 1)
     neg_train = len(train_set) - pos_train
-    pos_test = sum(1 for r in test_set if r.get('label') == 1)
+    pos_test = sum(1 for r in test_set if int(r.get("label", 0)) == 1)
     neg_test = len(test_set) - pos_test
-    
+
     logger.info(
-        f"Dataset split: train={len(train_set)} (pos={pos_train}, neg={neg_train}), "
-        f"test={len(test_set)} (pos={pos_test}, neg={neg_test})"
+        "Dataset split: train=%d (pos=%d, neg=%d), test=%d (pos=%d, neg=%d)",
+        len(train_set),
+        pos_train,
+        neg_train,
+        len(test_set),
+        pos_test,
+        neg_test,
     )
 
     logger.info("Selected training algorithm: %s", config.algorithm)
 
     if config.algorithm == "logreg":
         pipeline = _train_logistic_regression(train_set, config)
-        pipeline = _train_logistic_regression(
-            train_set,
-            config.random_state,
-            use_ngrams=config.use_ngrams,
-            use_features=config.use_features,
-        )
         model_output_path = config.output_path
         joblib.dump(pipeline, model_output_path)
         logger.info("Persisted TF-IDF + Logistic Regression pipeline to %s", model_output_path)
@@ -991,8 +894,6 @@ def train(config: TrainingConfig) -> None:
         y_true = [int(record.get("label", 0)) for record in test_set]
         probabilities = pipeline.predict_proba(texts_test)
         y_scores = [row[1] for row in probabilities]
-        proba_matrix = pipeline.predict_proba(texts_test)
-        y_scores = [row[1] for row in proba_matrix]
 
         metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores)
         logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
@@ -1027,7 +928,6 @@ def train(config: TrainingConfig) -> None:
         )
         logger.info("Model persisted to %s", model_output_path)
 
-        # Backwards compatible metadata for downstream tooling
         metadata = {
             "algorithm": "naive_bayes",
             "version": model.get("version", 1),
@@ -1041,12 +941,11 @@ def train(config: TrainingConfig) -> None:
     else:
         raise ValueError(f"Unsupported algorithm: {config.algorithm}")
 
-    # Warning su overfitting
-    if metrics['accuracy'] > 0.95:
+    if metrics["accuracy"] > 0.95:
         logger.warning(
             "⚠️  Very high accuracy (%.3f) may indicate overfitting. "
             "Consider expanding the dataset or reviewing test/train split.",
-            metrics['accuracy']
+            metrics["accuracy"],
         )
 
     _save_metrics_artifacts(model_output_path, metrics, roc_data, pr_data)
@@ -1115,7 +1014,7 @@ if __name__ == "__main__":
     args = parse_args()
     logging.basicConfig(
         level=args.log_level.upper(),
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
     cfg = TrainingConfig.from_args(args)
     train(cfg)
