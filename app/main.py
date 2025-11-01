@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import AsyncGenerator
@@ -27,7 +28,22 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Email → CRM/Excel Ingestor")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Gestisce startup e shutdown sostituendo gli eventi deprecati."""
+
+    # Inizializza il database e memorizza l'event loop corrente per l'SSE.
+    init_db()
+    loop = asyncio.get_running_loop()
+    events.set_loop(loop)
+    try:
+        yield
+    finally:
+        # Rilascia l'event loop per evitare riferimenti pendenti in fase di shutdown.
+        events.set_loop(None)
+
+
+app = FastAPI(title="Email → CRM/Excel Ingestor", lifespan=lifespan)
 
 
 def serialize_contact(contact: Contact) -> dict[str, object]:
@@ -79,8 +95,8 @@ class EventBroadcaster:
             "data": {"state": "idle"},
         }
 
-    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Imposta l'event loop usato per le notifiche asincrone."""
+    def set_loop(self, loop: asyncio.AbstractEventLoop | None) -> None:
+        """Imposta (o azzera) l'event loop usato per le notifiche asincrone."""
 
         self._loop = loop
 
@@ -116,8 +132,8 @@ class EventBroadcaster:
             except Exception:  # pragma: no cover - defensive logging
                 logger.exception("Unhandled ingestion error")
             finally:
-                if self._loop is not None:
-                    self._loop.call_soon_threadsafe(self._finish_run)
+                # Usa il loop catturato all'avvio per completare lo stato in sicurezza.
+                loop.call_soon_threadsafe(self._finish_run)
 
         self.publish_status("running", "Ingestione in corso")
         self._current_future = loop.run_in_executor(None, _run)
@@ -155,13 +171,6 @@ events = EventBroadcaster()
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
-
-
-@app.on_event("startup")
-async def startup() -> None:
-    init_db()
-    loop = asyncio.get_running_loop()
-    events.set_loop(loop)
 
 
 @app.get("/", include_in_schema=False)
