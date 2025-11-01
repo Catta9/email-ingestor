@@ -6,6 +6,11 @@ import logging
 from pathlib import Path
 from typing import Any
 
+try:
+    from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for local runs
+    from libs.simple_metrics import precision_recall_curve, roc_auc_score, roc_curve  # type: ignore
+
 from libs.ml_classifier import LeadMLClassifier, LeadModelConfig
 from scripts.train_classifier import _compute_metrics_from_scores
 
@@ -35,6 +40,50 @@ def _load_dataset(path: Path) -> list[dict[str, Any]]:
     return records
 
 
+def _compute_metrics(
+    y_true: list[int],
+    y_scores: list[float],
+    threshold: float,
+) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
+    y_pred = [1 if score >= threshold else 0 for score in y_scores]
+
+    tp = sum(1 for pred, true in zip(y_pred, y_true) if pred == 1 and true == 1)
+    fp = sum(1 for pred, true in zip(y_pred, y_true) if pred == 1 and true == 0)
+    tn = sum(1 for pred, true in zip(y_pred, y_true) if pred == 0 and true == 0)
+    fn = sum(1 for pred, true in zip(y_pred, y_true) if pred == 0 and true == 1)
+
+    total = len(y_true)
+    accuracy = (tp + tn) / total if total else 0.0
+    precision = tp / (tp + fp) if (tp + fp) else 0.0
+    recall = tp / (tp + fn) if (tp + fn) else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+
+    fpr, tpr, roc_thresholds = roc_curve(y_true, y_scores)
+    roc_auc = roc_auc_score(y_true, y_scores)
+    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true, y_scores)
+
+    metrics = {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": tp,
+        "fp": fp,
+        "tn": tn,
+        "fn": fn,
+        "roc_auc": roc_auc,
+        "threshold": threshold,
+    }
+
+    roc_data = {"fpr": list(fpr), "tpr": list(tpr), "thresholds": list(roc_thresholds)}
+    pr_data = {
+        "precision": list(pr_precision),
+        "recall": list(pr_recall),
+        "thresholds": list(pr_thresholds),
+    }
+    return metrics, roc_data, pr_data
+
+
 def evaluate(dataset_path: Path, model_path: Path | None, output_dir: Path) -> Path:
     records = _load_dataset(dataset_path)
 
@@ -57,6 +106,7 @@ def evaluate(dataset_path: Path, model_path: Path | None, output_dir: Path) -> P
 
     metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores, threshold)
     metrics["threshold"] = threshold
+    metrics, roc_data, pr_data = _compute_metrics(y_true, y_scores, threshold)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = output_dir / "evaluation_metrics.json"

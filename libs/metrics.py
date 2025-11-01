@@ -11,6 +11,22 @@ CollectorRegistry = prometheus_client.CollectorRegistry
 Counter = prometheus_client.Counter
 Gauge = prometheus_client.Gauge
 generate_latest = prometheus_client.generate_latest
+try:  # pragma: no cover - exercised indirectly by tests
+    from prometheus_client import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        generate_latest,
+    )
+except ModuleNotFoundError:  # pragma: no cover - dependency not installed in tests
+    from libs._compat.prometheus import (  # type: ignore
+        CONTENT_TYPE_LATEST,
+        CollectorRegistry,
+        Counter,
+        Gauge,
+        generate_latest,
+    )
 
 _REGISTRY = CollectorRegistry(auto_describe=True)
 
