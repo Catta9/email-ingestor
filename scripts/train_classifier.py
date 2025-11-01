@@ -160,6 +160,34 @@ def _extract_features(text: str) -> dict[str, float]:
     }
 
 
+def _feature_tokens_from_text(text: str) -> list[str]:
+    """Encode continuous features as pseudo tokens for linear models."""
+    feature_tokens: list[str] = []
+    features = _extract_features(text)
+    for name, value in features.items():
+        if value <= 0:
+            continue
+        repeats = max(1, int(round(value * 3)))
+        feature_tokens.extend([f"__feat_{name}"] * repeats)
+    return feature_tokens
+
+
+class _TfidfAnalyzer:
+    """Tokenizer compatible with TF-IDF that mirrors the NB pre-processing."""
+
+    def __init__(self, use_features: bool, use_ngrams: bool) -> None:
+        self.use_features = use_features
+        self.use_ngrams = use_ngrams
+
+    def __call__(self, text: str) -> list[str]:
+        tokens = _tokenize(text)
+        if self.use_ngrams:
+            tokens = tokens + _extract_ngrams(tokens, n=2)
+        if self.use_features:
+            tokens.extend(_feature_tokens_from_text(text))
+        return tokens
+
+
 def _augment_record(record: dict[str, str]) -> list[dict[str, str]]:
     """Data augmentation: genera varianti di un record."""
     augmented = [record]  # include originale
@@ -372,6 +400,8 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     return model
 
 
+def _train_logistic_regression(
+    train_set: list[dict[str, str]], config: TrainingConfig
 class _NaivePipelineAdapter:
     def __init__(self, model: dict, use_ngrams: bool, use_features: bool) -> None:
         self._model = model
@@ -600,9 +630,18 @@ def _train_logistic_regression(
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
 
+    analyzer = _TfidfAnalyzer(
+        use_features=config.use_features, use_ngrams=config.use_ngrams
+    )
+
     pipeline = Pipeline(
         [
             (
+                "tfidf",
+                TfidfVectorizer(
+                    analyzer=analyzer,
+                    min_df=1,
+                    lowercase=False,
                 "features",
                 _CombinedFeaturesTransformer(
                     use_ngrams=use_ngrams,
