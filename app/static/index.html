@@ -17,20 +17,13 @@
         </div>
         <div class="hero-controls">
           <div class="api-key-card">
-            <form id="api-key-form" class="api-key-form">
-              <label for="api-key-input">API key</label>
-              <div class="api-key-inputs">
-                <input
-                  id="api-key-input"
-                  type="password"
-                  placeholder="local-dev-key"
-                  autocomplete="off"
-                  spellcheck="false"
-                />
-                <button class="ghost" type="submit">Salva</button>
-              </div>
-              <p class="hint">La chiave viene salvata solo nel browser.</p>
-            </form>
+            <div class="api-key-form">
+              <label>Accesso IMAP</label>
+              <p class="hint">
+                Email e password sono lette dal file
+                <code>.env</code> (<code>IMAP_USERNAME</code> / <code>IMAP_PASSWORD</code>).
+              </p>
+            </div>
           </div>
           <div class="hero-actions">
             <button id="start-btn" class="primary">Avvia tool</button>

@@ -4,8 +4,6 @@ const statusBadge = document.getElementById("status-badge");
 const logList = document.getElementById("log-list");
 const contactsBody = document.querySelector("#contacts-table tbody");
 const summaryBox = document.getElementById("summary");
-const apiKeyForm = document.getElementById("api-key-form");
-const apiKeyInput = document.getElementById("api-key-input");
 const contactsMeta = document.getElementById("contacts-meta");
 const contactsColumnCount = document.querySelectorAll("#contacts-table thead th").length;
 
@@ -13,11 +11,6 @@ const MAX_LOG_ITEMS = 120;
 const STATUS_LABELS = { new: "Nuovo", reviewed: "In revisione" };
 
 let eventSource = null;
-let apiKey = localStorage.getItem("ingestorApiKey") || "";
-
-if (apiKeyInput) {
-  apiKeyInput.value = apiKey;
-}
 
 function timestamp() {
   return new Date().toLocaleTimeString([], {
@@ -50,14 +43,6 @@ function appendLog(message, level = "info") {
   }
 }
 
-function buildAuthHeaders(base = {}) {
-  const headers = { ...base };
-  if (apiKey) {
-    headers["X-API-Key"] = apiKey;
-  }
-  return headers;
-}
-
 function ensureEventStreamClosed() {
   if (eventSource) {
     eventSource.close();
@@ -66,14 +51,8 @@ function ensureEventStreamClosed() {
 }
 
 function connectEventStream() {
-  if (!apiKey) {
-    ensureEventStreamClosed();
-    return;
-  }
-
   ensureEventStreamClosed();
-  const query = new URLSearchParams({ api_key: apiKey }).toString();
-  eventSource = new EventSource(`/ingestion/stream?${query}`);
+  eventSource = new EventSource(`/ingestion/stream`);
   eventSource.onmessage = (event) => {
     try {
       const payload = JSON.parse(event.data);
@@ -95,9 +74,7 @@ function updateContactsMeta(contacts) {
     return;
   }
   if (!contacts.length) {
-    contactsMeta.textContent = apiKey
-      ? ""
-      : "Imposta la chiave per vedere i lead.";
+    contactsMeta.textContent = "Nessun contatto disponibile.";
     return;
   }
 
@@ -109,17 +86,9 @@ function updateContactsMeta(contacts) {
 
 async function loadContacts(options = {}) {
   const { quiet = false } = options;
-  if (!apiKey) {
-    renderContacts([], { emptyMessage: "Imposta l'API key per visualizzare i lead" });
-    updateContactsMeta([]);
-    return;
-  }
 
   try {
-    const response = await fetch("/contacts?limit=200", { headers: buildAuthHeaders() });
-    if (response.status === 401) {
-      throw new Error("API key non valida");
-    }
+    const response = await fetch("/contacts?limit=200");
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
     }
@@ -344,12 +313,9 @@ function createLastMessageCell(contact) {
 async function patchContact(contactId, payload) {
   const response = await fetch(`/contacts/${contactId}`, {
     method: "PATCH",
-    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  if (response.status === 401) {
-    throw new Error("API key non valida");
-  }
   if (!response.ok) {
     let detail = "";
     try {
@@ -366,12 +332,9 @@ async function patchContact(contactId, payload) {
 async function postTag(contactId, tag) {
   const response = await fetch(`/contacts/${contactId}/tags`, {
     method: "POST",
-    headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tag }),
   });
-  if (response.status === 401) {
-    throw new Error("API key non valida");
-  }
   if (!response.ok) {
     let detail = "";
     try {
@@ -448,31 +411,16 @@ function handleEvent(event) {
   }
 }
 
-function ensureApiKeyPresent() {
-  if (apiKey) {
-    return true;
-  }
-  appendLog("Imposta l'API key per utilizzare le API protette", "warning");
-  return false;
-}
-
 async function triggerIngestion() {
-  if (!ensureApiKeyPresent()) {
-    return;
-  }
   startBtn.disabled = true;
   try {
     const response = await fetch("/ingestion/run", {
       method: "POST",
-      headers: buildAuthHeaders(),
     });
     if (response.status === 409) {
       const payload = await response.json();
       appendLog(payload.detail || "Ingestione già in esecuzione", "warning");
       return;
-    }
-    if (response.status === 401) {
-      throw new Error("API key non valida");
     }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}`);
@@ -482,29 +430,6 @@ async function triggerIngestion() {
     appendLog(`Errore nell'avvio dell'ingestione: ${error.message}`, "error");
     startBtn.disabled = false;
   }
-}
-
-function persistApiKey(value) {
-  apiKey = value.trim();
-  if (apiKey) {
-    localStorage.setItem("ingestorApiKey", apiKey);
-  } else {
-    localStorage.removeItem("ingestorApiKey");
-  }
-  if (apiKeyInput && apiKeyInput.value !== apiKey) {
-    apiKeyInput.value = apiKey;
-  }
-  connectEventStream();
-  loadContacts();
-}
-
-if (apiKeyForm) {
-  apiKeyForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const value = apiKeyInput ? apiKeyInput.value : "";
-    persistApiKey(value);
-    appendLog("API key aggiornata", "info");
-  });
 }
 
 startBtn.addEventListener("click", triggerIngestion);
