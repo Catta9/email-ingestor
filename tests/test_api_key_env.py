@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 from pathlib import Path
+
+from fastapi import Request
 
 
 def test_expected_api_key_reads_from_dotenv(monkeypatch):
@@ -27,3 +30,36 @@ def test_expected_api_key_reads_from_dotenv(monkeypatch):
             env_file.write_text(existing_content)
         import app.main as main_module
         importlib.reload(main_module)
+
+
+def test_expected_api_key_strips_whitespace(monkeypatch):
+    monkeypatch.setenv("INGESTOR_API_KEY", "  trimmed-key  ")
+    monkeypatch.delenv("API_KEY", raising=False)
+
+    import app.main as main_module
+
+    reloaded = importlib.reload(main_module)
+    assert reloaded._expected_api_key() == "trimmed-key"
+
+
+def test_api_key_guard_tolerates_extra_spaces(monkeypatch):
+    monkeypatch.setenv("INGESTOR_API_KEY", "expected-key")
+    monkeypatch.delenv("API_KEY", raising=False)
+
+    import app.main as main_module
+
+    reloaded = importlib.reload(main_module)
+
+    scope = {
+        "type": "http",
+        "method": "GET",
+        "path": "/ingestion/stream",
+        "headers": [],
+        "query_string": b"",
+    }
+    request = Request(scope)
+
+    async def run_guard():
+        await reloaded.api_key_guard(request, x_api_key=" expected-key ")
+
+    asyncio.run(run_guard())
