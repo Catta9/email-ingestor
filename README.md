@@ -293,44 +293,12 @@ Poi rilancia l’ingestor.
 
 ---
 
-## Docker & Docker Compose
-### Immagine standalone
-```bash
-docker build -t email-ingestor .
-docker run --env-file .env -p 8000:8000 email-ingestor
-```
-- Usa lo stesso `.env` del progetto per configurare IMAP, SMTP e `DATABASE_URL`.
-- La cartella `model_store/` viene copiata nell'immagine: puoi sovrascriverla montando un volume se devi aggiornare i modelli.
-
-### Docker Compose con profili
-Il file `docker-compose.yml` dichiara i servizi:
-- `web`: API FastAPI (porta 8000).
-- `worker`: esegue `scripts.scheduler` per lanciare periodicamente l'ingestor.
-- `db`: Postgres 15 con healthcheck.
-
-Sono definiti due profili Compose per orchestrare gli ambienti:
-- **Dev (`--profile dev`)**: abilita `web-dev` e `worker-dev` con `--reload` e bind mount di `app/`, `libs/` e `scripts/` per hot-reload. Esempio:
-  ```bash
-  docker compose --profile dev up web-dev worker-dev db
-  ```
-- **Prod (`--profile prod`)**: usa i servizi `web` e `worker` basati sull'immagine buildata, più `db` per Postgres. Esempio:
-  ```bash
-  docker compose --profile prod up -d web worker db
-  ```
-
-Entrambi i profili montano i volumi nominati `model_store` e `lead_exports` all'interno del container (`/app/model_store` e `/app/data`) per condividere i modelli ML e l'export Excel (`LEADS_XLSX_PATH`).
-Compose carica automaticamente le variabili dal file `.env` (IMAP/SMTP/Postgres) tramite `env_file`. Personalizza `POSTGRES_*` e `DATABASE_URL` nel tuo `.env` per puntare al servizio `db`.
-
----
-
 ## Test & CI
 Esecuzione locale:
 ```bash
 pytest -v
 ```
-La pipeline **GitHub Actions** (Tests) ora esegue:
-- test unitari classici sull'host runner.
-- uno smoke test Docker che builda l'immagine e lancia `pytest` dentro il container per verificare la compatibilità del runtime.
+La pipeline **GitHub Actions** (Tests) esegue `pytest` sul runner GitHub con Python 3.11.
 
 ---
 
@@ -349,7 +317,6 @@ La pipeline **GitHub Actions** (Tests) ora esegue:
 - [x] Test (pytest) + CI  
 - [ ] Alembic + Postgres  
 - [ ] OAuth Gmail (IMAP) / Microsoft 365  
-- [x] Docker Compose (app + db) e profili prod  
 - [ ] UI web per revisione/annotazione lead  
 - [ ] Modelli ML più avanzati (n-gram, TF-IDF, transformer leggeri)  
 - [ ] Metriche & monitoraggio (Prometheus/exporter)  
