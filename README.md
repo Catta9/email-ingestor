@@ -71,3 +71,5 @@ Il file viene generato nel percorso indicato da `EXCEL_PATH`.
 ---
 
 Per ulteriori dettagli sui campi disponibili o su configurazioni aggiuntive consulta i commenti nel file `.env.example`.
+
+> **Nota:** il progetto non include più file o script per l'esecuzione in Docker; utilizza l'ambiente Python locale come descritto sopra.

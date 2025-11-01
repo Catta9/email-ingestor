@@ -20,8 +20,3 @@ jobs:
       - name: Run tests
         run: pytest
 
-      - name: Build Docker image (smoke)
-        run: docker build -t email-ingestor:ci .
-
-      - name: Run smoke tests inside container
-        run: docker run --rm email-ingestor:ci pytest
