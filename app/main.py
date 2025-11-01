@@ -178,6 +178,12 @@ async def index() -> FileResponse:
     index_file = static_dir / "index.html"
     return FileResponse(index_file)
 
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon() -> FileResponse:
+    icon_file = static_dir / "favicon.ico"
+    if not icon_file.exists():
+        raise HTTPException(status_code=404)
+    return FileResponse(icon_file)
 
 @app.get("/health")
 def health() -> dict[str, str]:

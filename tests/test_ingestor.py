@@ -53,6 +53,28 @@ def test_process_incoming_email_creates_contact(session):
     assert len(processed) == 1
 
 
+def test_process_incoming_email_strips_html_from_excerpt(session):
+    html_body = """
+    <div>
+      <p>Box a partire da 73€</p>
+      <p>25/10/2025, 10:00</p>
+    </div>
+    """
+
+    result = process_incoming_email(
+        session,
+        headers=_make_headers(message_id="<html-msg@example.com>"),
+        body=html_body,
+        imap_uid=555,
+    )
+
+    contact = session.execute(
+        select(Contact).where(Contact.id == result["contact_id"])
+    ).scalar_one()
+    assert contact.last_message_excerpt == "Box a partire da 73€ 25/10/2025, 10:00"
+
+
+
 def test_process_incoming_email_is_idempotent(session):
     body = """Hello, this is Jane.
     Phone: +39 333 1234567

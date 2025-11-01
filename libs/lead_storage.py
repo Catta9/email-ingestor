@@ -5,7 +5,7 @@ from collections import Counter
 from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence as SequenceABC
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
@@ -35,15 +35,23 @@ DEFAULT_TABLE_NAME = "LeadsTable"
 def _ensure_parent(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
+def _normalize_excel_datetime(value: datetime) -> datetime:
+    """Return a timezone-naive datetime compatible with Excel."""
+
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
 
 def _coerce_datetime(value: object) -> object:
     if isinstance(value, datetime):
-        return value
+        return _normalize_excel_datetime(value)
     if isinstance(value, str) and value:
         try:
-            return datetime.fromisoformat(value)
+            parsed = datetime.fromisoformat(value)
         except ValueError:
             return value
+        return _normalize_excel_datetime(parsed)
     return value
 
 

@@ -4,7 +4,8 @@ import logging
 from datetime import datetime
 from email.utils import parseaddr
 from typing import Any, Dict
-
+from html import unescape
+from bs4 import BeautifulSoup
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,11 +30,21 @@ def extract_sender_domain(headers: dict[str, str]) -> str | None:
 class IngestionResult(Dict[str, Any]):
     """Risultato tipizzato restituito da ``process_incoming_email``."""
 
+def _plain_text_body(body: str) -> str:
+    """Converte il corpo dell'email in testo semplice ripulito dall'HTML."""
+
+    text = body
+    if "<" in body and ">" in body:
+        soup = BeautifulSoup(body, "html.parser")
+        text = soup.get_text(separator=" ")
+    text = unescape(text).replace("\xa0", " ")
+    return " ".join(text.split())
+
 
 def _build_body_excerpt(body: str, max_chars: int = 400) -> str:
     """Restituisce un estratto monolinea del corpo email."""
 
-    normalized = " ".join(body.split())
+    normalized = _plain_text_body(body)
     if len(normalized) <= max_chars:
         return normalized
     return normalized[: max_chars - 1] + "…"

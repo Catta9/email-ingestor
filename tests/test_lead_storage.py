@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from openpyxl import load_workbook
@@ -40,6 +40,37 @@ def test_excel_lead_writer_creates_file(tmp_path: Path):
     summary_ws = wb["Summary"]
     assert summary_ws["A2"].value == "Totale lead"
     assert summary_ws["B2"].value == 2
+
+def test_excel_lead_writer_normalizes_timezone(tmp_path: Path):
+    path = tmp_path / "tz.xlsx"
+    writer = ExcelLeadWriter(path)
+
+    aware_dt = datetime(2024, 9, 24, 15, 45, tzinfo=timezone.utc)
+    lead = {
+        "inserted_at": aware_dt,
+        "email": "tz@example.com",
+        "first_name": "TZ",
+        "last_name": "Aware",
+        "company": "TZ Corp",
+        "phone": "+3912345678",
+        "subject": "Timezone",
+        "received_at": aware_dt,
+        "notes": "Aware",
+    }
+
+    writer.append(lead)
+
+    wb = load_workbook(path)
+    data_ws = wb["Leads"]
+    inserted_at = data_ws["A2"].value
+    received_at = data_ws["H2"].value
+
+    assert isinstance(inserted_at, datetime)
+    assert isinstance(received_at, datetime)
+    assert inserted_at.tzinfo is None
+    assert received_at.tzinfo is None
+    assert inserted_at == aware_dt.replace(tzinfo=None)
+    assert received_at == aware_dt.replace(tzinfo=None)
 
 
 def test_excel_lead_writer_from_env_custom_headers(monkeypatch, tmp_path: Path):
