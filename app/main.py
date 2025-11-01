@@ -19,12 +19,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from dotenv import load_dotenv
 from libs.db import SessionLocal, init_db
 from libs.lead_storage import build_structured_workbook
 from libs.models import Contact, ContactTag
 from libs.services.ingestion_runner import IngestionEvent, IngestionRunner
 from libs.metrics import CONTENT_TYPE_LATEST, render_metrics
 
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 
