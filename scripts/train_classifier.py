@@ -8,23 +8,50 @@ import os
 import random
 import re
 import shutil
+from types import SimpleNamespace
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from libs.compat import joblib
+
+try:  # pragma: no cover - optional dependency
+    import numpy as np  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - executed in minimal environments
+    np = None  # type: ignore[assignment]
 import joblib
 import numpy as np
+from scipy import sparse
 
 
 try:
+    from sklearn.base import BaseEstimator, TransformerMixin
+    from sklearn.feature_extraction import DictVectorizer
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
     from sklearn.metrics import precision_recall_curve, roc_auc_score, roc_curve
     from sklearn.pipeline import Pipeline
-except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for CI environment
     TfidfVectorizer = LogisticRegression = Pipeline = None  # type: ignore
-    precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore
+    from libs.simple_metrics import (  # type: ignore
+        precision_recall_curve,
+        roc_auc_score,
+        roc_curve,
+    )
+except ModuleNotFoundError:  # pragma: no cover - optional dependency for legacy NB only
+    class _BaseEstimatorFallback:
+        pass
+
+    class _TransformerMixinFallback:
+        pass
+
+    BaseEstimator = _BaseEstimatorFallback  # type: ignore[misc,assignment]
+    TransformerMixin = _TransformerMixinFallback  # type: ignore[misc,assignment]
+    DictVectorizer = None  # type: ignore[assignment]
+    TfidfVectorizer = None  # type: ignore[assignment]
+    LogisticRegression = Pipeline = None  # type: ignore[assignment]
+    precision_recall_curve = roc_curve = roc_auc_score = None  # type: ignore[assignment]
 
 
 logger = logging.getLogger(__name__)
@@ -375,10 +402,229 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
 
 def _train_logistic_regression(
     train_set: list[dict[str, str]], config: TrainingConfig
+class _NaivePipelineAdapter:
+    def __init__(self, model: dict, use_ngrams: bool, use_features: bool) -> None:
+        self._model = model
+        self._use_ngrams = use_ngrams
+        self._use_features = use_features
+
+    def predict_proba(self, texts: Sequence[str]) -> list[list[float]]:
+        results: list[list[float]] = []
+        for text in texts:
+            proba = _predict_proba(self._model, text, self._use_ngrams, self._use_features)
+            results.append([1.0 - proba, proba])
+        return results
+
+
+def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int):
+@dataclass
+class _SimpleLogisticPipeline:
+    vocabulary: dict[str, int]
+    extra_features: list[str]
+    weights: list[float]
+    bias: float
+    use_ngrams: bool
+    use_features: bool
+
+    def _vectorize(self, text: str) -> list[float]:
+        features = [0.0] * len(self.weights)
+        tokens = _tokenize(text)
+
+        vocab_size = len(self.vocabulary)
+        if vocab_size:
+            for token in tokens:
+                idx = self.vocabulary.get(token)
+                if idx is not None:
+                    features[idx] += 1.0
+            if self.use_ngrams:
+                for bigram in _extract_ngrams(tokens, n=2):
+                    idx = self.vocabulary.get(bigram)
+                    if idx is not None:
+                        features[idx] += 1.0
+            norm = math.sqrt(sum(value * value for value in features[:vocab_size]))
+            if norm:
+                for i in range(vocab_size):
+                    features[i] /= norm
+
+        if self.use_features and self.extra_features:
+            numeric = _extract_features(text)
+            base = vocab_size
+            for offset, name in enumerate(self.extra_features):
+                features[base + offset] = float(numeric.get(name, 0.0))
+
+        return features
+
+    def predict_proba(self, texts: Sequence[str]) -> list[list[float]]:  # type: ignore[override]
+        results: list[list[float]] = []
+        for text in texts:
+            vector = self._vectorize(text)
+            score = sum(w * x for w, x in zip(self.weights, vector)) + self.bias
+            score = max(-50.0, min(50.0, score))
+            prob = 1.0 / (1.0 + math.exp(-score))
+            results.append([1.0 - prob, prob])
+        return results
+
+
+def _train_simple_logistic(train_set: list[dict[str, str]], config: TrainingConfig) -> _SimpleLogisticPipeline:
+    texts = [_prepare_text(record) for record in train_set]
+    labels = [float(int(record.get("label", 0))) for record in train_set]
+
+    token_sequences: list[list[str]] = []
+    vocabulary: dict[str, int] = {}
+    for text in texts:
+        tokens = _tokenize(text)
+        augmented = list(tokens)
+        if config.use_ngrams:
+            augmented.extend(_extract_ngrams(tokens, n=2))
+        token_sequences.append(augmented)
+        for token in augmented:
+            if token not in vocabulary:
+                vocabulary[token] = len(vocabulary)
+
+    extra_features: list[str] = []
+    if config.use_features:
+        seen = set()
+        for text in texts:
+            for name in _extract_features(text).keys():
+                if name not in seen:
+                    seen.add(name)
+                    extra_features.append(name)
+
+    vocab_size = len(vocabulary)
+    extra_size = len(extra_features) if config.use_features else 0
+    num_features = vocab_size + extra_size
+    if num_features == 0:
+        vocabulary = {}
+        extra_features = []
+        num_features = 1
+
+    matrix: list[list[float]] = []
+    for text, tokens in zip(texts, token_sequences):
+        row = [0.0] * num_features
+        for token in tokens:
+            idx = vocabulary.get(token)
+            if idx is not None:
+                row[idx] += 1.0
+        if vocab_size:
+            norm = math.sqrt(sum(value * value for value in row[:vocab_size]))
+            if norm:
+                for i in range(vocab_size):
+                    row[i] /= norm
+        if config.use_features and extra_features:
+            numeric = _extract_features(text)
+            for offset, name in enumerate(extra_features):
+                row[vocab_size + offset] = float(numeric.get(name, 0.0))
+        matrix.append(row)
+
+    weights = [0.0] * num_features
+    bias = 0.0
+    rng = random.Random(config.random_state)
+    indices = list(range(len(texts)))
+
+    if not indices:
+        return _SimpleLogisticPipeline(vocabulary, extra_features, weights, bias, config.use_ngrams, config.use_features)
+
+    for epoch in range(400):
+        rng.shuffle(indices)
+        grad_w = [0.0] * num_features
+        grad_b = 0.0
+        for idx in indices:
+            row = matrix[idx]
+            score = sum(w * x for w, x in zip(weights, row)) + bias
+            score = max(-50.0, min(50.0, score))
+            pred = 1.0 / (1.0 + math.exp(-score))
+            error = pred - labels[idx]
+            grad_b += error
+            for j, value in enumerate(row):
+                grad_w[j] += error * value
+        scale = 1.0 / len(indices)
+        learning_rate = 0.5 / (1.0 + epoch * 0.05)
+        for j in range(num_features):
+            grad = grad_w[j] * scale + 0.01 * weights[j]
+            weights[j] -= learning_rate * grad
+        bias -= learning_rate * grad_b * scale
+
+    return _SimpleLogisticPipeline(
+        vocabulary=vocabulary,
+        extra_features=extra_features,
+        weights=weights,
+        bias=bias,
+        use_ngrams=config.use_ngrams,
+        use_features=config.use_features,
+    )
+
+
+def _train_logistic_regression(train_set: list[dict[str, str]], config: TrainingConfig):
+    if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
+        logger.info("scikit-learn not available, using simplified logistic regression")
+        return _train_simple_logistic(train_set, config)
+class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
+    """Combine TF-IDF text features with optional engineered features."""
+
+    def __init__(self, use_ngrams: bool, use_features: bool):
+        self.use_ngrams = use_ngrams
+        self.use_features = use_features
+        self._vectorizer: TfidfVectorizer | None = None
+        self._dict_vectorizer: DictVectorizer | None = None
+
+    def fit(self, X: Sequence[str], y: Sequence[int] | None = None):  # noqa: D401
+        if TfidfVectorizer is None:
+            raise RuntimeError(
+                "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+            )
+
+        texts = list(X)
+        ngram_range = (1, 2) if self.use_ngrams else (1, 1)
+        self._vectorizer = TfidfVectorizer(
+            ngram_range=ngram_range,
+            min_df=1,
+            stop_words=list(EXTENDED_STOPWORDS),
+            strip_accents="unicode",
+        )
+        self._vectorizer.fit(texts)
+
+        if self.use_features:
+            if DictVectorizer is None:
+                raise RuntimeError(
+                    "scikit-learn DictVectorizer is required when use_features is enabled."
+                )
+            self._dict_vectorizer = DictVectorizer(sparse=True)
+            feature_dicts = [_extract_features(text) for text in texts]
+            self._dict_vectorizer.fit(feature_dicts)
+
+        return self
+
+    def transform(self, X: Sequence[str]):  # noqa: D401
+        if self._vectorizer is None:
+            raise RuntimeError("CombinedFeaturesTransformer must be fitted before use.")
+
+        texts = list(X)
+        tfidf_matrix = self._vectorizer.transform(texts)
+
+        if not self.use_features or self._dict_vectorizer is None:
+            return tfidf_matrix
+
+        feature_dicts = [_extract_features(text) for text in texts]
+        feature_matrix = self._dict_vectorizer.transform(feature_dicts)
+        return sparse.hstack([tfidf_matrix, feature_matrix], format="csr")
+
+
+def _train_logistic_regression(
+    train_set: list[dict[str, str]],
+    random_state: int,
+    use_ngrams: bool,
+    use_features: bool,
 ) -> Pipeline:
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
+        logger.warning(
+            "scikit-learn is not available; falling back to a lightweight Naive Bayes pipeline"
+        )
+        fallback_config = SimpleNamespace(use_ngrams=True, use_features=True)
+        model = _train_naive_bayes(train_set, fallback_config)  # type: ignore[arg-type]
+        return _NaivePipelineAdapter(model, True, True)
+    if use_features and DictVectorizer is None:
         raise RuntimeError(
-            "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+            "scikit-learn DictVectorizer is required when use_features is enabled."
         )
 
     texts = [_prepare_text(record) for record in train_set]
@@ -396,6 +642,10 @@ def _train_logistic_regression(
                     analyzer=analyzer,
                     min_df=1,
                     lowercase=False,
+                "features",
+                _CombinedFeaturesTransformer(
+                    use_ngrams=use_ngrams,
+                    use_features=use_features,
                 ),
             ),
             (
@@ -464,32 +714,153 @@ def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool)
     return pos_prob / total
 
 
+def _confusion_matrix(y_true: Sequence[int], y_pred: Sequence[int]) -> tuple[int, int, int, int]:
+    tp = fp = tn = fn = 0
+    for truth, pred in zip(y_true, y_pred):
+        if truth == 1 and pred == 1:
+            tp += 1
+        elif truth == 0 and pred == 1:
+            fp += 1
+        elif truth == 0 and pred == 0:
+            tn += 1
+        elif truth == 1 and pred == 0:
+            fn += 1
+    return tp, fp, tn, fn
+
+
+def _safe_auc(fpr: Sequence[float], tpr: Sequence[float]) -> float:
+    if len(fpr) < 2:
+        return 0.0
+    area = 0.0
+    for idx in range(1, len(fpr)):
+        width = fpr[idx] - fpr[idx - 1]
+        height = (tpr[idx] + tpr[idx - 1]) / 2
+        area += width * height
+    return max(0.0, min(1.0, area))
+
+
+def _fallback_roc_curve(
+    y_true: Sequence[int], y_scores: Sequence[float]
+) -> tuple[list[float], list[float], list[float]]:
+    pairs = sorted(zip(y_scores, y_true), key=lambda item: item[0], reverse=True)
+    thresholds: list[float] = []
+    tpr_values: list[float] = []
+    fpr_values: list[float] = []
+
+    positives = sum(1 for value in y_true if value == 1)
+    negatives = len(y_true) - positives
+    positives = max(positives, 1)
+    negatives = max(negatives, 1)
+
+    for idx, (score, _) in enumerate(pairs):
+        threshold = score
+        preds = [1 if value >= threshold else 0 for value, _ in pairs]
+        tp, fp, tn, fn = _confusion_matrix([label for _, label in pairs], preds)
+        tpr_values.append(tp / positives)
+        fpr_values.append(fp / negatives)
+        thresholds.append(threshold)
+
+    # ensure the curve reaches (0,0) and (1,1)
+    if thresholds:
+        thresholds.append(min(thresholds) - 1e-6)
+    else:
+        thresholds.append(0.0)
+    tpr_values.append(0.0)
+    fpr_values.append(0.0)
+
+    combined = sorted(zip(fpr_values, tpr_values, thresholds))
+    fpr_sorted = [item[0] for item in combined]
+    tpr_sorted = [item[1] for item in combined]
+    thresholds_sorted = [item[2] for item in combined]
+    return fpr_sorted, tpr_sorted, thresholds_sorted
+
+
+def _fallback_precision_recall(
+    y_true: Sequence[int], y_scores: Sequence[float]
+) -> tuple[list[float], list[float], list[float]]:
+    pairs = sorted(zip(y_scores, y_true), key=lambda item: item[0], reverse=True)
+    precisions: list[float] = []
+    recalls: list[float] = []
+    thresholds: list[float] = []
+
+    positives = sum(1 for value in y_true if value == 1)
+    positives = max(positives, 1)
+
+    tp = fp = 0
+    last_score = None
+    for score, truth in pairs:
+        if truth == 1:
+            tp += 1
+        else:
+            fp += 1
+        if score != last_score:
+            precision = tp / (tp + fp) if (tp + fp) else 1.0
+            recall = tp / positives
+            precisions.append(precision)
+            recalls.append(recall)
+            thresholds.append(score)
+            last_score = score
+
+    precisions.append(0.0)
+    recalls.append(0.0)
+    thresholds.append((thresholds[-1] if thresholds else 0.0) - 1e-6)
+
+    return precisions, recalls, thresholds
+
+
 def _compute_metrics_from_scores(
     y_true: Sequence[int], y_scores: Sequence[float], threshold: float = 0.5
 ) -> tuple[dict[str, float], dict[str, list[float]], dict[str, list[float]]]:
-    if precision_recall_curve is None or roc_curve is None or roc_auc_score is None:
-        raise RuntimeError(
-            "scikit-learn is required to compute evaluation metrics. Install scikit-learn first."
-        )
+    y_true_list = [int(value) for value in y_true]
+    y_scores_list = [float(value) for value in y_scores]
+    y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
 
-    y_true_array = np.asarray(y_true)
-    y_scores_array = np.asarray(y_scores)
-    y_pred = (y_scores_array >= threshold).astype(int)
+    tp, fp, tn, fn = _confusion_matrix(y_true_list, y_pred)
+    y_true_list = [int(v) for v in y_true]
+    y_scores_list = [float(v) for v in y_scores]
+    y_pred = [1 if score >= threshold else 0 for score in y_scores_list]
 
-    tp = int(((y_pred == 1) & (y_true_array == 1)).sum())
-    fp = int(((y_pred == 1) & (y_true_array == 0)).sum())
-    tn = int(((y_pred == 0) & (y_true_array == 0)).sum())
-    fn = int(((y_pred == 0) & (y_true_array == 1)).sum())
+    tp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 1)
+    fp = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 1 and true == 0)
+    tn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 0)
+    fn = sum(1 for pred, true in zip(y_pred, y_true_list) if pred == 0 and true == 1)
 
-    total = len(y_true_array)
+    total = len(y_true_list)
     accuracy = (tp + tn) / total if total else 0.0
     precision = tp / (tp + fp) if (tp + fp) else 0.0
     recall = tp / (tp + fn) if (tp + fn) else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
 
-    fpr, tpr, roc_thresholds = roc_curve(y_true_array, y_scores_array)
-    roc_auc = roc_auc_score(y_true_array, y_scores_array)
-    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_array, y_scores_array)
+    if roc_curve is not None and roc_auc_score is not None:
+        fpr, tpr, roc_thresholds = roc_curve(y_true_list, y_scores_list)
+        roc_auc = float(roc_auc_score(y_true_list, y_scores_list))
+        roc_data = {
+            "fpr": fpr.tolist(),
+            "tpr": tpr.tolist(),
+            "thresholds": roc_thresholds.tolist(),
+        }
+    else:
+        fpr, tpr, roc_thresholds = _fallback_roc_curve(y_true_list, y_scores_list)
+        roc_auc = _safe_auc(fpr, tpr)
+        roc_data = {"fpr": fpr, "tpr": tpr, "thresholds": roc_thresholds}
+
+    if precision_recall_curve is not None:
+        pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_list, y_scores_list)
+        pr_data = {
+            "precision": pr_precision.tolist(),
+            "recall": pr_recall.tolist(),
+            "thresholds": pr_thresholds.tolist(),
+        }
+    else:
+        pr_precision, pr_recall, pr_thresholds = _fallback_precision_recall(y_true_list, y_scores_list)
+        pr_data = {
+            "precision": pr_precision,
+            "recall": pr_recall,
+            "thresholds": pr_thresholds,
+        }
+    fpr, tpr, roc_thresholds = roc_curve(y_true_list, y_scores_list)
+    roc_auc = roc_auc_score(y_true_list, y_scores_list)
+    pr_precision, pr_recall, pr_thresholds = precision_recall_curve(y_true_list, y_scores_list)
 
     metrics = {
         "accuracy": accuracy,
@@ -503,14 +874,14 @@ def _compute_metrics_from_scores(
         "roc_auc": roc_auc,
     }
     roc_data = {
-        "fpr": fpr.tolist(),
-        "tpr": tpr.tolist(),
-        "thresholds": roc_thresholds.tolist(),
+        "fpr": list(fpr),
+        "tpr": list(tpr),
+        "thresholds": list(roc_thresholds),
     }
     pr_data = {
-        "precision": pr_precision.tolist(),
-        "recall": pr_recall.tolist(),
-        "thresholds": pr_thresholds.tolist(),
+        "precision": list(pr_precision),
+        "recall": list(pr_recall),
+        "thresholds": list(pr_thresholds),
     }
     return metrics, roc_data, pr_data
 
@@ -606,19 +977,33 @@ def train(config: TrainingConfig) -> None:
 
     if config.algorithm == "logreg":
         pipeline = _train_logistic_regression(train_set, config)
+        pipeline = _train_logistic_regression(
+            train_set,
+            config.random_state,
+            use_ngrams=config.use_ngrams,
+            use_features=config.use_features,
+        )
         model_output_path = config.output_path
         joblib.dump(pipeline, model_output_path)
         logger.info("Persisted TF-IDF + Logistic Regression pipeline to %s", model_output_path)
 
         texts_test = [_prepare_text(record) for record in test_set]
         y_true = [int(record.get("label", 0)) for record in test_set]
-        y_scores = pipeline.predict_proba(texts_test)[:, 1].tolist()
+        probabilities = pipeline.predict_proba(texts_test)
+        y_scores = [row[1] for row in probabilities]
+        proba_matrix = pipeline.predict_proba(texts_test)
+        y_scores = [row[1] for row in proba_matrix]
 
         metrics, roc_data, pr_data = _compute_metrics_from_scores(y_true, y_scores)
         logger.info("Evaluation metrics:\n%s", _format_metrics(metrics).strip())
 
+        if Pipeline is None or not isinstance(pipeline, Pipeline):
+            algorithm_label = "simple_logreg"
+        else:
+            algorithm_label = "tfidf_logreg"
+
         metadata = {
-            "algorithm": "tfidf_logreg",
+            "algorithm": algorithm_label,
             "version": 1,
             "trained_at": datetime.utcnow().isoformat() + "Z",
             "threshold": 0.5,
