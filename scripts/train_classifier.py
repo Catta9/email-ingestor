@@ -400,8 +400,6 @@ def _train_naive_bayes(train_set: list[dict[str, str]], config: TrainingConfig):
     return model
 
 
-def _train_logistic_regression(
-    train_set: list[dict[str, str]], config: TrainingConfig
 class _NaivePipelineAdapter:
     def __init__(self, model: dict, use_ngrams: bool, use_features: bool) -> None:
         self._model = model
@@ -417,14 +415,12 @@ class _NaivePipelineAdapter:
 
 
 def _train_logistic_regression(train_set: list[dict[str, str]], random_state: int):
-@dataclass
-class _SimpleLogisticPipeline:
-    vocabulary: dict[str, int]
-    extra_features: list[str]
-    weights: list[float]
-    bias: float
-    use_ngrams: bool
-    use_features: bool
+    class _SimpleLogisticPipeline:
+        def __init__(self, weights: list[float], bias: float, use_ngrams: bool, use_features: bool) -> None:
+            self.weights = weights
+            self.bias = bias
+            self.use_ngrams = use_ngrams
+            self.use_features = use_features
 
     def _vectorize(self, text: str) -> list[float]:
         features = [0.0] * len(self.weights)
@@ -558,96 +554,18 @@ def _train_logistic_regression(train_set: list[dict[str, str]], config: Training
     if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
         logger.info("scikit-learn not available, using simplified logistic regression")
         return _train_simple_logistic(train_set, config)
-class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
-    """Combine TF-IDF text features with optional engineered features."""
-
-    def __init__(self, use_ngrams: bool, use_features: bool):
-        self.use_ngrams = use_ngrams
-        self.use_features = use_features
-        self._vectorizer: TfidfVectorizer | None = None
-        self._dict_vectorizer: DictVectorizer | None = None
-
-    def fit(self, X: Sequence[str], y: Sequence[int] | None = None):  # noqa: D401
-        if TfidfVectorizer is None:
-            raise RuntimeError(
-                "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
-            )
-
-        texts = list(X)
-        ngram_range = (1, 2) if self.use_ngrams else (1, 1)
-        self._vectorizer = TfidfVectorizer(
-            ngram_range=ngram_range,
-            min_df=1,
-            stop_words=list(EXTENDED_STOPWORDS),
-            strip_accents="unicode",
-        )
-        self._vectorizer.fit(texts)
-
-        if self.use_features:
-            if DictVectorizer is None:
-                raise RuntimeError(
-                    "scikit-learn DictVectorizer is required when use_features is enabled."
-                )
-            self._dict_vectorizer = DictVectorizer(sparse=True)
-            feature_dicts = [_extract_features(text) for text in texts]
-            self._dict_vectorizer.fit(feature_dicts)
-
-        return self
-
-    def transform(self, X: Sequence[str]):  # noqa: D401
-        if self._vectorizer is None:
-            raise RuntimeError("CombinedFeaturesTransformer must be fitted before use.")
-
-        texts = list(X)
-        tfidf_matrix = self._vectorizer.transform(texts)
-
-        if not self.use_features or self._dict_vectorizer is None:
-            return tfidf_matrix
-
-        feature_dicts = [_extract_features(text) for text in texts]
-        feature_matrix = self._dict_vectorizer.transform(feature_dicts)
-        return sparse.hstack([tfidf_matrix, feature_matrix], format="csr")
-
-
-def _train_logistic_regression(
-    train_set: list[dict[str, str]],
-    random_state: int,
-    use_ngrams: bool,
-    use_features: bool,
-) -> Pipeline:
-    if Pipeline is None or TfidfVectorizer is None or LogisticRegression is None:
-        logger.warning(
-            "scikit-learn is not available; falling back to a lightweight Naive Bayes pipeline"
-        )
-        fallback_config = SimpleNamespace(use_ngrams=True, use_features=True)
-        model = _train_naive_bayes(train_set, fallback_config)  # type: ignore[arg-type]
-        return _NaivePipelineAdapter(model, True, True)
-    if use_features and DictVectorizer is None:
-        raise RuntimeError(
-            "scikit-learn DictVectorizer is required when use_features is enabled."
-        )
 
     texts = [_prepare_text(record) for record in train_set]
     labels = [int(record.get("label", 0)) for record in train_set]
 
-    analyzer = _TfidfAnalyzer(
-        use_features=config.use_features, use_ngrams=config.use_ngrams
+    transformer = _CombinedFeaturesTransformer(
+        use_ngrams=config.use_ngrams,
+        use_features=config.use_features,
     )
 
     pipeline = Pipeline(
         [
-            (
-                "tfidf",
-                TfidfVectorizer(
-                    analyzer=analyzer,
-                    min_df=1,
-                    lowercase=False,
-                "features",
-                _CombinedFeaturesTransformer(
-                    use_ngrams=use_ngrams,
-                    use_features=use_features,
-                ),
-            ),
+            ("features", transformer),
             (
                 "clf",
                 LogisticRegression(
@@ -663,11 +581,46 @@ def _train_logistic_regression(
     return pipeline
 
 
-def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool) -> float:
-    """Predizione con bigrams e features."""
-    tokens = _tokenize(text)
-    if not tokens:
-        return 0.0
+class _CombinedFeaturesTransformer(TransformerMixin, BaseEstimator):
+    def __init__(self, use_ngrams: bool, use_features: bool) -> None:
+        self.use_ngrams = use_ngrams
+        self.use_features = use_features
+        self._vectorizer: TfidfVectorizer | None = None
+        self._dict_vectorizer: DictVectorizer | None = None
+
+        def fit(self, X: Sequence[str], y: Sequence[int] | None = None):  # noqa: D401
+            if TfidfVectorizer is None:
+                raise RuntimeError(
+                    "scikit-learn is required for the TF-IDF + Logistic Regression pipeline."
+                )
+    
+            texts = list(X)
+            ngram_range = (1, 2) if self.use_ngrams else (1, 1)
+            self._vectorizer = TfidfVectorizer(
+                ngram_range=ngram_range,
+                min_df=1,
+                stop_words=list(EXTENDED_STOPWORDS),
+                strip_accents="unicode",
+            )
+            self._vectorizer.fit(texts)
+    
+            if self.use_features:
+                if DictVectorizer is None:
+                    raise RuntimeError(
+                        "scikit-learn is required for feature vectorization."
+                    )
+                feature_dicts = [_extract_features(text) for text in texts]
+                self._dict_vectorizer = DictVectorizer()
+                self._dict_vectorizer.fit(feature_dicts)
+    
+            return self
+    
+    
+    def _predict_proba(model: dict, text: str, use_ngrams: bool, use_features: bool) -> float:
+        """Predizione con bigrams e features."""
+        tokens = _tokenize(text)
+        if not tokens:
+            return 0.0
 
     vocab_size = max(1, int(model.get("vocabulary_size") or 0))
     pos_counts: dict[str, int] = model["token_counts"]["1"]
