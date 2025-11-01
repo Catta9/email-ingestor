@@ -6,7 +6,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-# For MVP we use SQLite. Switch to Postgres by setting DATABASE_URL accordingly.
+# For MVP we use SQLite stored in `data/app.db`.
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./data/app.db")
 
 url = make_url(DATABASE_URL)
@@ -34,5 +34,5 @@ Base = declarative_base()
 
 ## Importa i modelli (così SQLAlchemy li “conosce”) e crea le tabelle se non esistono.
 def init_db():
-    from .models import Contact, ContactEvent, ContactTag, ProcessedMessage  # noqa
+    from .models import Contact, ContactEvent, ProcessedMessage  # noqa
     Base.metadata.create_all(bind=engine)

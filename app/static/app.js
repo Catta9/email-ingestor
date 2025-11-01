@@ -14,7 +14,6 @@ const statLeads = document.getElementById("stat-leads");
 const statSkipped = document.getElementById("stat-skipped");
 
 const MAX_LOG_ITEMS = 120;
-const STATUS_LABELS = { new: "Nuovo", reviewed: "In revisione" };
 const LEVEL_ICONS = {
   info: "ℹ️",
   success: "✅",
@@ -135,9 +134,7 @@ function updateContactsMeta(contacts) {
   }
 
   const total = contacts.length;
-  const newCount = contacts.filter((contact) => contact.status === "new").length;
-  const reviewedCount = total - newCount;
-  contactsMeta.textContent = `Totali: ${total} • Nuovi: ${newCount} • In revisione: ${reviewedCount}`;
+  contactsMeta.textContent = `Totali: ${total}`;
 }
 
 async function loadContacts(options = {}) {
@@ -183,9 +180,6 @@ function renderContacts(contacts, options = {}) {
     row.appendChild(createEmailCell(contact));
     row.appendChild(createTextCell(contact.org || "-"));
     row.appendChild(createTextCell(contact.phone || "-"));
-    row.appendChild(createStatusCell(contact));
-    row.appendChild(createTagsCell(contact));
-    row.appendChild(createNotesCell(contact));
     row.appendChild(createLastMessageCell(contact));
 
     contactsBody.appendChild(row);
@@ -212,143 +206,6 @@ function createEmailCell(contact) {
   return cell;
 }
 
-function createStatusCell(contact) {
-  const cell = document.createElement("td");
-  const select = document.createElement("select");
-  select.className = "status-select";
-  Object.entries(STATUS_LABELS).forEach(([value, label]) => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = label;
-    select.appendChild(option);
-  });
-  select.value = contact.status || "new";
-
-  select.addEventListener("change", async () => {
-    const previous = contact.status || "new";
-    const chosen = select.value;
-    select.disabled = true;
-    try {
-      await patchContact(contact.id, { status: chosen });
-      appendLog(
-        `Lead ${contact.email || contact.id} marcato come ${STATUS_LABELS[chosen] || chosen}`,
-        "success",
-      );
-      await loadContacts({ quiet: true });
-    } catch (error) {
-      appendLog(`Impossibile aggiornare lo stato: ${error.message}`, "error");
-      select.value = previous;
-    } finally {
-      select.disabled = false;
-    }
-  });
-
-  cell.appendChild(select);
-  return cell;
-}
-
-function createTagsCell(contact) {
-  const cell = document.createElement("td");
-  const tagList = document.createElement("div");
-  tagList.className = "tag-list";
-
-  if (contact.tags && contact.tags.length) {
-    contact.tags.forEach((tag) => {
-      const badge = document.createElement("span");
-      badge.className = "tag";
-      badge.textContent = tag;
-      tagList.appendChild(badge);
-    });
-  } else {
-    const placeholder = document.createElement("span");
-    placeholder.className = "muted";
-    placeholder.textContent = "Nessun tag";
-    tagList.appendChild(placeholder);
-  }
-
-  const form = document.createElement("form");
-  form.className = "tag-form";
-  form.noValidate = true;
-  const input = document.createElement("input");
-  input.type = "text";
-  input.placeholder = "Aggiungi tag";
-  input.autocomplete = "off";
-  const button = document.createElement("button");
-  button.type = "submit";
-  button.className = "ghost small";
-  button.textContent = "Aggiungi";
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const value = input.value.trim();
-    if (!value) {
-      return;
-    }
-    button.disabled = true;
-    input.disabled = true;
-    try {
-      await postTag(contact.id, value);
-      appendLog(`Tag "${value}" aggiunto a ${contact.email || contact.id}`, "success");
-      input.value = "";
-      await loadContacts({ quiet: true });
-    } catch (error) {
-      appendLog(`Impossibile aggiungere il tag: ${error.message}`, "error");
-    } finally {
-      button.disabled = false;
-      input.disabled = false;
-    }
-  });
-
-  form.appendChild(input);
-  form.appendChild(button);
-  cell.appendChild(tagList);
-  cell.appendChild(form);
-  return cell;
-}
-
-function createNotesCell(contact) {
-  const cell = document.createElement("td");
-  const form = document.createElement("form");
-  form.className = "note-form";
-  form.noValidate = true;
-  const textarea = document.createElement("textarea");
-  textarea.placeholder = "Annota follow-up, priorità, ecc.";
-  textarea.value = contact.notes || "";
-  const footer = document.createElement("footer");
-  const button = document.createElement("button");
-  button.type = "submit";
-  button.className = "ghost small";
-  button.textContent = "Salva";
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const current = contact.notes || "";
-    const updated = textarea.value;
-    if (updated.trim() === current.trim()) {
-      appendLog("Nessuna modifica alle note", "info");
-      return;
-    }
-    button.disabled = true;
-    textarea.disabled = true;
-    try {
-      await patchContact(contact.id, { notes: updated });
-      appendLog(`Note aggiornate per ${contact.email || contact.id}`, "success");
-      await loadContacts({ quiet: true });
-    } catch (error) {
-      appendLog(`Impossibile salvare le note: ${error.message}`, "error");
-    } finally {
-      button.disabled = false;
-      textarea.disabled = false;
-    }
-  });
-
-  footer.appendChild(button);
-  form.appendChild(textarea);
-  form.appendChild(footer);
-  cell.appendChild(form);
-  return cell;
-}
-
 function createLastMessageCell(contact) {
   const cell = document.createElement("td");
   const subject = contact.last_message_subject || "-";
@@ -364,44 +221,6 @@ function createLastMessageCell(contact) {
     cell.appendChild(excerptEl);
   }
   return cell;
-}
-
-async function patchContact(contactId, payload) {
-  const response = await fetch(`/contacts/${contactId}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  if (!response.ok) {
-    let detail = "";
-    try {
-      const data = await response.json();
-      detail = data.detail;
-    } catch (_) {
-      /* ignore */
-    }
-    throw new Error(detail || `HTTP ${response.status}`);
-  }
-  return response.json();
-}
-
-async function postTag(contactId, tag) {
-  const response = await fetch(`/contacts/${contactId}/tags`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ tag }),
-  });
-  if (!response.ok) {
-    let detail = "";
-    try {
-      const data = await response.json();
-      detail = data.detail;
-    } catch (_) {
-      /* ignore */
-    }
-    throw new Error(detail || `HTTP ${response.status}`);
-  }
-  return response.json();
 }
 
 function handleEvent(event) {
