@@ -5,7 +5,7 @@ from io import BytesIO
 
 from openpyxl import load_workbook
 
-from libs.models import Contact, ContactTag
+from libs.models import Contact
 
 
 def test_contacts_endpoint_returns_data(client, session_factory):
@@ -31,9 +31,7 @@ def test_contacts_endpoint_returns_data(client, session_factory):
         assert item["first_name"] == "Jane"
         assert item["last_name"] == "Doe"
         assert item["org"] == "Example Inc"
-        assert item["status"] == "new"
-        assert item["notes"] is None
-        assert item["tags"] == []
+        assert item["consent"] is False
         # created_at should be a valid ISO formatted datetime
         datetime.fromisoformat(item["created_at"])
         assert "last_message_subject" in item
@@ -72,10 +70,8 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
             "phone",
             "org",
             "source",
+            "consent",
             "created_at",
-            "status",
-            "tags",
-            "notes",
             "last_message_subject",
             "last_message_received_at",
             "last_message_excerpt",
@@ -86,71 +82,11 @@ def test_export_xlsx_endpoint_returns_workbook(client, session_factory):
         assert data_row[3] == "Smith"
         assert data_row[4] == "555123456"
         assert data_row[5] == "Smith LLC"
-        assert data_row[8] == "new"
-        assert data_row[9] is None
+        assert data_row[6] == "email"
+        assert data_row[7] is False
     finally:
         session.close()
 
 
-def test_update_contact_status_and_notes(client, session_factory):
-    session = session_factory()
-    try:
-        contact = Contact(email="lead@example.com", first_name="Lead")
-        session.add(contact)
-        session.commit()
-
-        response = client.patch(
-            f"/contacts/{contact.id}",
-            json={"status": "reviewed", "notes": "Chiamato il cliente"},
-        )
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["status"] == "reviewed"
-        assert payload["notes"] == "Chiamato il cliente"
-
-        session.refresh(contact)
-        assert contact.status == "reviewed"
-        assert contact.notes == "Chiamato il cliente"
-    finally:
-        session.close()
-def test_add_tag_to_contact(client, session_factory):
-    session = session_factory()
-    try:
-        contact = Contact(email="tag@example.com")
-        session.add(contact)
-        session.commit()
-
-        response = client.post(
-            f"/contacts/{contact.id}/tags",
-            json={"tag": "priorità"},
-        )
-        assert response.status_code == 200
-        payload = response.json()
-        assert "priorità" in payload["tags"]
-
-        session.refresh(contact)
-        assert any(tag.tag == "priorità" for tag in contact.tags)
-    finally:
-        session.close()
 
 
-def test_add_tag_avoids_duplicates(client, session_factory):
-    session = session_factory()
-    try:
-        contact = Contact(email="dup@example.com")
-        contact.tags.append(ContactTag(tag="caldo"))
-        session.add(contact)
-        session.commit()
-
-        response = client.post(
-            f"/contacts/{contact.id}/tags",
-            json={"tag": "Caldo"},
-        )
-        assert response.status_code == 200
-        payload = response.json()
-        assert payload["tags"] == ["caldo"]
-
-        session.refresh(contact)
-        assert [tag.tag for tag in contact.tags] == ["caldo"]
-    finally:
-        session.close()

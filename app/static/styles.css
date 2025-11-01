@@ -379,51 +379,6 @@ textarea {
   background: rgba(56, 189, 248, 0.08);
 }
 
-#contacts-table td .muted {
-  color: var(--text-muted);
-  font-size: 0.85rem;
-}
-
-.status-select {
-  width: 140px;
-}
-
-.tag-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-}
-
-.tag {
-  background: rgba(56, 189, 248, 0.15);
-  border: 1px solid rgba(56, 189, 248, 0.4);
-  color: var(--accent);
-  padding: 0.2rem 0.5rem;
-  border-radius: 999px;
-  font-size: 0.75rem;
-}
-
-.tag-form {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.tag-form input {
-  min-width: 120px;
-}
-
-.note-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.note-form footer {
-  display: flex;
-  justify-content: flex-end;
-}
-
 .table-empty {
   text-align: center;
   padding: 2rem 0;

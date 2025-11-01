@@ -1,8 +1,8 @@
 from __future__ import annotations
 import uuid
 from datetime import datetime
-from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import String, Text, JSON, DateTime, Boolean, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import String, Text, JSON, DateTime, Boolean
 
 from .db import Base
 
@@ -27,14 +27,6 @@ class Contact(Base):
     last_message_subject: Mapped[str | None] = mapped_column(String, nullable=True)
     last_message_received_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     last_message_excerpt: Mapped[str | None] = mapped_column(Text, nullable=True)
-    status: Mapped[str] = mapped_column(String, default="new", nullable=False)
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-
-    tags: Mapped[list["ContactTag"]] = relationship(
-        back_populates="contact",
-        cascade="all, delete-orphan",
-        order_by="ContactTag.tag",
-    )
 
 ## audit/eventi -> traccia provenienza e payload estratto 
 class ContactEvent(Base):
@@ -56,16 +48,3 @@ class ProcessedMessage(Base):
     processed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
-class ContactTag(Base):
-    __tablename__ = "contact_tags"
-
-    id: Mapped[str] = mapped_column(String, primary_key=True, default=gen_uuid)
-    contact_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("contacts.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    tag: Mapped[str] = mapped_column(String, nullable=False)
-
-    contact: Mapped[Contact] = relationship(back_populates="tags")
